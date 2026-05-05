@@ -11,19 +11,17 @@ Break a PRD into independently-grabbable issues using vertical slices (tracer bu
 
 ### 1. Locate the PRD
 
-Ask the user for the PRD file path (e.g. `issues/prd.md`).
-
-If the PRD is not already in your context window, read it from the file.
+Ask for the PRD file path (e.g. `issues/prd.md`). If not in context, read it.
 
 ### 2. Explore the codebase (optional)
 
-If you have not already explored the codebase, do so to understand the current state of the code.
+If you haven't already, explore to understand current state.
 
 ### 3. Draft vertical slices
 
-Break the PRD into **tracer bullet** issues. Each issue is a thin vertical slice that cuts through ALL integration layers end-to-end, NOT a horizontal slice of one layer.
+Each issue is a **tracer bullet** — a thin vertical slice cutting through ALL layers end-to-end, NOT a horizontal slice of one layer.
 
-Slices may be 'HITL' or 'AFK'. HITL slices require human interaction, such as an architectural decision or a design review. AFK slices can be implemented and merged without human interaction. Prefer AFK over HITL where possible.
+Slices are **HITL** (need human interaction — design review, architectural decision) or **AFK** (implementable and mergeable without it). Prefer AFK.
 
 <vertical-slice-rules>
 - Each slice delivers a narrow but COMPLETE path through every layer (schema, API, UI, tests)
@@ -33,40 +31,38 @@ Slices may be 'HITL' or 'AFK'. HITL slices require human interaction, such as an
 
 ### 4. Quiz the user
 
-Present the proposed breakdown as a numbered list. For each slice, show:
+Present a numbered list. For each slice:
 
 - **Title**: short descriptive name
 - **Type**: HITL / AFK
-- **Blocked by**: which other slices (if any) must complete first
-- **User stories covered**: which user stories from the PRD this addresses
+- **Blocked by**: which slices (if any) must complete first
+- **User stories covered**: which from the PRD
 
-Ask the user:
+Ask:
 
 - Does the granularity feel right? (too coarse / too fine)
-- Are the dependency relationships correct?
-- Should any slices be merged or split further?
-- Are the correct slices marked as HITL and AFK?
+- Are dependencies correct?
+- Should any slices be merged or split?
+- Are HITL/AFK labels right?
 
-Iterate until the user approves the breakdown.
+Iterate until approved.
 
 ### 5. Create the issue files
 
-For each approved slice, write a markdown file in `issues/` using the naming pattern `issues/NNN-short-title.md` (e.g. `issues/001-add-user-auth.md`).
+For each approved slice, write `issues/NNN-short-title.md` (e.g. `issues/001-add-user-auth.md`). Number from the next available slot (check existing files in `issues/`).
 
-Number issues starting from the next available number (check what files already exist in `issues/`).
+Create files in dependency order (blockers first) so "Blocked by" can reference real filenames.
 
-Create files in dependency order (blockers first) so you can reference real filenames in the "Blocked by" field.
-
-Do NOT use `gh issue create` or any GitHub CLI commands. Do NOT reference GitHub issue numbers. Use local filenames for all cross-references.
+Do NOT use `gh issue create` or any GitHub CLI. Do NOT reference GitHub issue numbers. Local filenames only for cross-references.
 
 <issue-template>
 ## Parent PRD
 
-`issues/prd.md` (or whichever PRD file was used)
+`issues/prd.md` (or whichever PRD was used)
 
 ## What to build
 
-A concise description of this vertical slice. Describe the end-to-end behavior, not layer-by-layer implementation. Reference specific sections of the parent PRD rather than duplicating content.
+Concise description of this vertical slice. End-to-end behavior, not layer-by-layer implementation. Reference sections of the parent PRD rather than duplicating.
 
 ## Acceptance criteria
 
@@ -78,7 +74,7 @@ A concise description of this vertical slice. Describe the end-to-end behavior, 
 
 - Blocked by `issues/NNN-title.md` (if any)
 
-Or "None - can start immediately" if no blockers.
+Or "None - can start immediately".
 
 ## User stories addressed
 
