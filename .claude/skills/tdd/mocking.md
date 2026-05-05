@@ -3,23 +3,15 @@
 Mock at **system boundaries** only:
 
 - External APIs (payment, email, etc.)
-- Databases (sometimes - prefer test DB)
+- Databases (sometimes — prefer a test DB)
 - Time/randomness
-- File system (sometimes)
+- Filesystem (sometimes)
 
-Don't mock:
+Don't mock your own classes/modules, internal collaborators, or anything you control.
 
-- Your own classes/modules
-- Internal collaborators
-- Anything you control
+## Designing for mockability
 
-## Designing for Mockability
-
-At system boundaries, design interfaces that are easy to mock:
-
-**1. Use dependency injection**
-
-Pass external dependencies in rather than creating them internally:
+**1. Use dependency injection** — pass external deps in instead of creating them internally:
 
 ```typescript
 // Easy to mock
@@ -34,26 +26,20 @@ function processPayment(order) {
 }
 ```
 
-**2. Prefer SDK-style interfaces over generic fetchers**
-
-Create specific functions for each external operation instead of one generic function with conditional logic:
+**2. Prefer SDK-style interfaces over generic fetchers** — specific functions per operation, not one generic with conditional logic:
 
 ```typescript
-// GOOD: Each function is independently mockable
+// GOOD: each function is independently mockable
 const api = {
   getUser: (id) => fetch(`/users/${id}`),
   getOrders: (userId) => fetch(`/users/${userId}/orders`),
   createOrder: (data) => fetch('/orders', { method: 'POST', body: data }),
 };
 
-// BAD: Mocking requires conditional logic inside the mock
+// BAD: mocking requires conditional logic in the mock
 const api = {
   fetch: (endpoint, options) => fetch(endpoint, options),
 };
 ```
 
-The SDK approach means:
-- Each mock returns one specific shape
-- No conditional logic in test setup
-- Easier to see which endpoints a test exercises
-- Type safety per endpoint
+The SDK approach: each mock returns one shape; no conditionals in test setup; clearer which endpoints a test exercises; type safety per endpoint.
