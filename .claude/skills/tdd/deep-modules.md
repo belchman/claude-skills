@@ -1,22 +1,20 @@
 # Deep Modules
 
-From "A Philosophy of Software Design":
+From *A Philosophy of Software Design* (Ousterhout):
 
-**Deep module** = small interface + lots of implementation
+**Deep module** = small interface + lots of implementation.
 
 ```
 ┌─────────────────────┐
 │   Small Interface   │  ← Few methods, simple params
 ├─────────────────────┤
 │                     │
-│                     │
 │  Deep Implementation│  ← Complex logic hidden
-│                     │
 │                     │
 └─────────────────────┘
 ```
 
-**Shallow module** = large interface + little implementation (avoid)
+**Shallow module** = large interface + thin implementation (avoid).
 
 ```
 ┌─────────────────────────────────┐
