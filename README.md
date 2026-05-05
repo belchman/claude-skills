@@ -1,4 +1,4 @@
-# claude-code-commands
+# claude-skills
 
 A marketplace of individually-installable commands and skills for [Claude Code](https://claude.ai/claude-code). Each plugin stands alone — install only what you need.
 
@@ -7,15 +7,15 @@ A marketplace of individually-installable commands and skills for [Claude Code](
 Add the marketplace once:
 
 ```
-/plugin marketplace add belchman/claude-code-commands
+/plugin marketplace add belchman/claude-skills
 ```
 
 Then install any subset:
 
 ```
-/plugin install map@claude-code-commands
-/plugin install adversarial-review@claude-code-commands
-/plugin install crap@claude-code-commands
+/plugin install map@claude-skills
+/plugin install adversarial-review@claude-skills
+/plugin install crap@claude-skills
 ```
 
 ## Plugins
