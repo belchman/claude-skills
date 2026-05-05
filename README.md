@@ -134,12 +134,42 @@ python3 plugins/crap/skills/crap/crap.py score \
 
 ---
 
+---
+
+### `claude-statusline` — bash script (not a plugin)
+
+A two-line Claude Code statusline showing model, location, context %, **per-turn input/output tokens**, session totals, cache visibility, and cost. Color-coded context bar (green → yellow → red).
+
+```
+[Opus] claude-skills@master | effort:medium
+████░░░░░░ 47% | turn ↓8.5K ↑1.2K (cache r:2.0K w:5.0K) | sess ↓45.0K ↑12.0K | $0.1234
+```
+
+Install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/belchman/claude-skills/master/statusline/claude-statusline.sh \
+  -o ~/.claude/statusline.sh
+chmod +x ~/.claude/statusline.sh
+```
+
+Then add to `~/.claude/settings.json`:
+
+```json
+{ "statusLine": { "type": "command", "command": "~/.claude/statusline.sh", "padding": 1 } }
+```
+
+Schema verified against the [official docs](https://code.claude.com/docs/en/statusline). All field names null-safe. See [`statusline/README.md`](statusline/README.md) for the rationale per field, customization, and the dry-run test command.
+
+---
+
 ## Recommended workflow
 
 1. `/map` on a new project → generates `ARCHITECTURE.md`
 2. `/adversarial-review` → finds gaps in docs and config
 3. `/crap` → finds risky, under-tested code to address next
 4. After changes, `/map --section deps` or `/adversarial-review --diff` to stay current
+5. Drop in `claude-statusline` so context %, per-turn tokens, and cost are always visible
 
 ## License
 
