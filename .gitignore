@@ -13,3 +13,4 @@ __pycache__/
 .crap-cache/
 .crap-baseline.json
 mutants/
+logs/

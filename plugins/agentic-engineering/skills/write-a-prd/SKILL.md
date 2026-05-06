@@ -1,6 +1,6 @@
 ---
 name: write-a-prd
-description: Generate a PRD from the client brief and write it as a local markdown file in issues/. Use when the user wants to turn a client request into a structured PRD.
+description: Interview the user and produce issues/prd.md from a client brief, feature idea, or rough request. Step 1 of the build pipeline (write-a-prd → prd-to-issues → work-issues). Use when no PRD exists yet and one is needed. NOT for breaking an existing PRD into tasks (use prd-to-issues), and NOT for tracker-coupled output (this writes local markdown only). Triggers: /write-a-prd, "write a PRD", "draft a spec", "turn this brief into a PRD".
 ---
 
 Invoked when the user wants to create a PRD. Skip steps you judge unnecessary.

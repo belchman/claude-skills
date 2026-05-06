@@ -16,6 +16,7 @@ Then install any subset:
 /plugin install map@claude-skills
 /plugin install adversarial-review@claude-skills
 /plugin install crap@claude-skills
+/plugin install agentic-engineering@claude-skills
 ```
 
 ## Plugins
@@ -136,6 +137,34 @@ python3 plugins/crap/skills/crap/crap.py score \
 
 ---
 
+### `agentic-engineering` — eleven composable skills
+
+Bundles the build pipeline (PRD → issues → autonomous work) plus TDD, architectural deepening, bug diagnosis, prototyping, domain-aware interrogation, navigation, and a Claude Code overhead audit.
+
+```
+/plugin install agentic-engineering@claude-skills
+```
+
+Skills bundled:
+
+| Skill | Trigger | Purpose |
+| --- | --- | --- |
+| `write-a-prd` | "draft a PRD", "write a spec" | Brief → `issues/prd.md` |
+| `prd-to-issues` | "break this PRD into issues" | `issues/prd.md` → `issues/NNN-*.md` (HITL/AFK) |
+| `work-issues` | `/work-issues` (explicit-only) | Autonomously work one AFK issue end-to-end. Has `bin/loop.sh` headless runner. |
+| `tdd` | "TDD this", "red-green-refactor" | One-test-at-a-time vertical slicing |
+| `grill-with-docs` | "grill this", "stress-test this design" | Default grilling — challenges plan against `CONTEXT.md` and `docs/adr/` |
+| `grill-me` | "grill me" (rare — green-field only) | Pure socratic interrogation when no codebase exists |
+| `improve-codebase-architecture` | "find deepening opportunities" | Surface shallow modules; deletion test; grilling loop on candidates |
+| `diagnose` | "diagnose this", "debug this" | Reproduce → minimise → hypothesise → instrument → fix |
+| `prototype` | "prototype this", "try a few designs" | Throwaway TUI for state, or radical UI variants on one route |
+| `zoom-out` | `/zoom-out` (explicit-only) | "Go up a layer of abstraction" |
+| `audit-claude-overhead` | `/audit-claude-overhead` (explicit-only) | Walks ~/.claude + project + plugin scope for the 9 token-waste patterns |
+
+Convention: skills produce/consume a small set of files (`issues/*.md`, `CONTEXT.md`, `docs/adr/*.md`). The repo's [`CLAUDE.md`](CLAUDE.md) holds the full routing map and decision tree. Several skills vendored from [`mattpocock/skills`](https://github.com/mattpocock/skills) (MIT) — full attribution in `plugins/agentic-engineering/ATTRIBUTION.md`.
+
+---
+
 ### `claude-statusline` — bash script (not a plugin)
 
 A two-line Claude Code statusline showing model, location, context %, **per-turn input/output tokens**, session totals, cache visibility, and cost. Color-coded context bar (green → yellow → red).
@@ -165,11 +194,24 @@ Schema verified against the [official docs](https://code.claude.com/docs/en/stat
 
 ## Recommended workflow
 
+**Quality / review (existing code):**
+
 1. `/map` on a new project → generates `ARCHITECTURE.md`
 2. `/adversarial-review` → finds gaps in docs and config
 3. `/crap` → finds risky, under-tested code to address next
 4. After changes, `/map --section deps` or `/adversarial-review --diff` to stay current
-5. Drop in `claude-statusline` so context %, per-turn tokens, and cost are always visible
+
+**Build (new work, with `agentic-engineering`):**
+
+1. `/write-a-prd` — interview, produce `issues/prd.md`
+2. `/grill-with-docs` — stress-test the PRD against `CONTEXT.md` / `docs/adr/`
+3. `/prd-to-issues` — break PRD into HITL / AFK issues
+4. `/work-issues` (or `bin/loop.sh` for AFK) — autonomously work the queue
+
+**Always-on:**
+
+- Drop in `claude-statusline` so context %, per-turn tokens, and cost are always visible
+- `/audit-claude-overhead` quarterly to keep token overhead under control
 
 ## License
 

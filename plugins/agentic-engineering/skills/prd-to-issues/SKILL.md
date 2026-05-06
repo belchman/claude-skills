@@ -1,6 +1,6 @@
 ---
 name: prd-to-issues
-description: Break a PRD into independently-workable issues and write each as a local markdown file in issues/. Use when the user wants to turn a PRD into a list of concrete tasks.
+description: Read an existing PRD (typically issues/prd.md, written by write-a-prd) and break it into vertical-slice tracer-bullet issues at issues/NNN-short-title.md, tagged HITL (needs human) or AFK (autonomous). Step 2 of the build pipeline (write-a-prd → prd-to-issues → work-issues). Use when a PRD exists and needs to become work tickets. NOT for writing the PRD itself (use write-a-prd). Triggers: /prd-to-issues, "break this PRD into issues", "turn this spec into tickets".
 ---
 
 # PRD to Issues

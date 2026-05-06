@@ -1,0 +1,27 @@
+{
+  "name": "agentic-engineering",
+  "description": "Eleven composable skills for AI-agentic engineering: PRD → issues → autonomous work pipeline, plus TDD, architectural deepening, bug diagnosis, prototyping, domain interrogation (CONTEXT.md/ADR-aware), navigation, and Claude Code overhead audit.",
+  "version": "1.0.0",
+  "author": {
+    "name": "belchman"
+  },
+  "license": "MIT",
+  "keywords": [
+    "agentic",
+    "engineering",
+    "prd",
+    "tdd",
+    "issues",
+    "afk",
+    "diagnosis",
+    "debugging",
+    "architecture",
+    "deep-modules",
+    "ddd",
+    "context-md",
+    "adr",
+    "prototyping",
+    "audit",
+    "claude-code"
+  ]
+}

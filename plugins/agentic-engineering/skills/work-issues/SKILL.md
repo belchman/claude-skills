@@ -1,6 +1,7 @@
 ---
 name: work-issues
-description: Autonomously work one task from an issues/ queue end-to-end — explore, implement (TDD when applicable), run feedback loops, commit, update the issue file. Use when the user invokes /work-issues, asks to "work the issue queue", "run an AFK iteration", or wants a single-task autonomous pass over markdown issues. Pairs with prd-to-issues (which produces the queue). Headless loop runner: bin/loop.sh in this skill.
+description: Autonomously work one task from an issues/ queue end-to-end — explore, implement (TDD when applicable), run feedback loops, commit, update the issue file. Step 3 of the build pipeline (write-a-prd → prd-to-issues → work-issues). Heavyweight (commits code, modifies the issue queue); explicit invocation only. Headless loop runner: bin/loop.sh. Triggers: /work-issues, "work the issue queue", "run an AFK iteration", "do one issue end-to-end".
+disable-model-invocation: true
 ---
 
 # work-issues — one autonomous iteration
