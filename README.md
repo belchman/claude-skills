@@ -13,10 +13,10 @@ Add the marketplace once:
 Then install any subset:
 
 ```
-/plugin install map@claude-skills
-/plugin install adversarial-review@claude-skills
-/plugin install crap@claude-skills
-/plugin install agentic-engineering@claude-skills
+/plugin install map@belchman-claude-skills
+/plugin install adversarial-review@belchman-claude-skills
+/plugin install crap@belchman-claude-skills
+/plugin install agentic-engineering@belchman-claude-skills
 ```
 
 ## Plugins
@@ -142,7 +142,7 @@ python3 plugins/crap/skills/crap/crap.py score \
 Bundles the build pipeline (PRD → issues → autonomous work) plus TDD, architectural deepening, bug diagnosis, prototyping, domain-aware interrogation, navigation, and a Claude Code overhead audit.
 
 ```
-/plugin install agentic-engineering@claude-skills
+/plugin install agentic-engineering@belchman-claude-skills
 ```
 
 Skills bundled:
