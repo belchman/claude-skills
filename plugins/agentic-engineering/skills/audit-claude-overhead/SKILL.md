@@ -41,9 +41,11 @@ Total addressable: ~73% of tokens. Realistic recovery: 27% → ~65% productive.
 
 ### 1. Run the audit
 
-```bash
-./.claude/skills/audit-claude-overhead/bin/audit.sh
-```
+Run the bundled `bin/audit.sh` (lives in this skill's directory). When invoked via `/audit-claude-overhead`, locate it relative to this `SKILL.md` — typical paths after install:
+
+- Plugin-installed: `~/.claude/plugins/cache/belchman-claude-skills/agentic-engineering/<version>/skills/audit-claude-overhead/bin/audit.sh`
+- Vendored locally: `./.claude/skills/audit-claude-overhead/bin/audit.sh`
+- This source repo: `./plugins/agentic-engineering/skills/audit-claude-overhead/bin/audit.sh`
 
 The script inspects three scopes and prints a per-pattern table with measured values vs. thresholds. It does not modify anything.
 

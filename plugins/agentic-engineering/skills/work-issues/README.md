@@ -7,15 +7,24 @@ Two ways to invoke:
 - **Inside a Claude Code session** — say `/work-issues` or describe the task ("work the issue queue", "run an AFK iteration"). Claude reads `SKILL.md` and does one task end-to-end.
 - **Headless / AFK** — run `bin/loop.sh` (looped) or `bin/once.sh` (single shot) from your shell. Both read the same `SKILL.md` as their prompt, so behavior is identical to the in-session version.
 
-## Install in another project
+## Install
 
-Copy the skill directory into the target repo's `.claude/skills/`:
+**Option 1 — via the marketplace plugin (recommended):**
 
-```bash
-cp -R path/to/claude-skills/.claude/skills/work-issues /your/project/.claude/skills/
+```
+/plugin marketplace add belchman/claude-skills
+/plugin install agentic-engineering@belchman-claude-skills
 ```
 
-That's it. The skill is self-contained: scripts, prompt, and metadata all live under `work-issues/`.
+After install, the skill lives at `~/.claude/plugins/cache/belchman-claude-skills/agentic-engineering/<version>/skills/work-issues/`. Invoke with `/work-issues` inside Claude Code, or call `bin/loop.sh` from that path for headless / AFK use.
+
+**Option 2 — vendor manually into a project:**
+
+```bash
+cp -R path/to/claude-skills/plugins/agentic-engineering/skills/work-issues /your/project/.claude/skills/
+```
+
+The skill is self-contained: scripts, prompt, and metadata all live under `work-issues/`. Then run `./.claude/skills/work-issues/bin/loop.sh` from the project root.
 
 ## Project requirements
 
@@ -26,6 +35,8 @@ The skill assumes:
 3. Some form of feedback loop the agent can detect (test runner, type checker, linter). Node, Python, Go, and Rust are auto-detected; for anything else, document the loop in the project README so the agent finds it.
 
 ## Headless usage
+
+Paths assume Option 2 (vendored locally). For Option 1 (plugin-installed), substitute `~/.claude/plugins/cache/belchman-claude-skills/agentic-engineering/<version>/skills/work-issues/` for `./.claude/skills/work-issues/`.
 
 ```bash
 # Run up to 10 iterations (default). Stops when the queue drains, the cap is
