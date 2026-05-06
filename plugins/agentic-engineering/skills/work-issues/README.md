@@ -16,7 +16,15 @@ Two ways to invoke:
 /plugin install agentic-engineering@belchman-claude-skills
 ```
 
-After install, the skill lives at `~/.claude/plugins/cache/belchman-claude-skills/agentic-engineering/<version>/skills/work-issues/`. Invoke with `/work-issues` inside Claude Code, or call `bin/loop.sh` from that path for headless / AFK use.
+Invoke with `/work-issues` inside Claude Code. For headless / AFK use, call the bundled script — Claude Code provides `${CLAUDE_SKILL_DIR}` to resolve the install path:
+
+```bash
+# Inside Claude Code (substituted by the skill runtime):
+bash "${CLAUDE_SKILL_DIR}/bin/loop.sh"
+
+# From a separate shell (resolve manually — typical install location):
+bash "$HOME/.claude/plugins/cache/belchman-claude-skills/agentic-engineering/$(jq -r '.plugins["agentic-engineering@belchman-claude-skills"][0].version' "$HOME/.claude/plugins/installed_plugins.json")/skills/work-issues/bin/loop.sh"
+```
 
 **Option 2 — vendor manually into a project:**
 

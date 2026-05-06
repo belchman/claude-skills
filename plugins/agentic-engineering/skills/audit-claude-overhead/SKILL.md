@@ -41,13 +41,11 @@ Total addressable: ~73% of tokens. Realistic recovery: 27% → ~65% productive.
 
 ### 1. Run the audit
 
-Run the bundled `bin/audit.sh` (lives in this skill's directory). When invoked via `/audit-claude-overhead`, locate it relative to this `SKILL.md` — typical paths after install:
+```bash
+bash "${CLAUDE_SKILL_DIR}/bin/audit.sh"
+```
 
-- Plugin-installed: `~/.claude/plugins/cache/belchman-claude-skills/agentic-engineering/<version>/skills/audit-claude-overhead/bin/audit.sh`
-- Vendored locally: `./.claude/skills/audit-claude-overhead/bin/audit.sh`
-- This source repo: `./plugins/agentic-engineering/skills/audit-claude-overhead/bin/audit.sh`
-
-The script inspects three scopes and prints a per-pattern table with measured values vs. thresholds. It does not modify anything.
+`${CLAUDE_SKILL_DIR}` resolves to this skill's directory regardless of how it was installed (plugin cache, project `.claude/skills/`, or source repo). The script inspects three scopes and prints a per-pattern table with measured values vs. thresholds. It does not modify anything.
 
 - **Global** — `~/.claude/CLAUDE.md`, `~/.claude/settings.json`, `~/.claude/skills/`
 - **Project** — `./.claude/CLAUDE.md`, `./.claude/settings.json`, `./.claude/skills/`
