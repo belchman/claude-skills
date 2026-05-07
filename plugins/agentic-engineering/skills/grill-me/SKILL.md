@@ -8,3 +8,13 @@ Interview me relentlessly about every aspect of this plan until we reach a share
 Ask the questions one at a time.
 
 If a question can be answered by exploring the codebase, explore the codebase instead.
+
+## Stop conditions
+
+End the session when **any** holds:
+
+- The user signals done.
+- Every open branch of the design tree has at most a one-sentence answer.
+- The plan is concrete enough to feed into the user's next step (e.g. `write-a-prd`, sketching an implementation, or a separate decision).
+
+Without a stop condition, pure socratic loops wander. When you hit one, summarize what crystallized and what's still open in one closing block.

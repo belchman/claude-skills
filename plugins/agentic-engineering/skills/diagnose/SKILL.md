@@ -9,6 +9,22 @@ A discipline for hard bugs. Skip phases only when explicitly justified.
 
 When exploring the codebase, use `CONTEXT.md` to ground your mental model of the relevant modules and check `docs/adr/` for decisions in the area you're touching.
 
+## Phase 0 — Capture the symptom
+
+Before anything else, write down what the user actually reported. The wrong-bug failure mode (debugging a nearby symptom rather than the reported one) starts here.
+
+Capture, even if only in conversation:
+
+- [ ] **Actual behavior** — exactly what the user saw (error message verbatim, wrong output, slow timing).
+- [ ] **Expected behavior** — what they expected to see.
+- [ ] **First known good / first known bad** — last release, last commit, last input that worked. "Always broken" and "broke yesterday" are different bugs.
+- [ ] **Repro the user has, if any** — even an unreliable one tells you a lot.
+- [ ] **Severity / blast radius** — one user vs. all users, prod vs. dev, recoverable vs. data-loss.
+
+If any of these are missing and the user is reachable, ask. If AFK, note the gap explicitly and proceed with the strongest assumption stated.
+
+Only after the symptom is captured does Phase 1 begin.
+
 ## Phase 1 — Build a feedback loop
 
 **This is the skill.** Everything else is mechanical. With a fast, deterministic, agent-runnable pass/fail signal you will find the cause — bisection, hypothesis-testing, and instrumentation all just consume that signal. Without one, no amount of staring at code will save you.

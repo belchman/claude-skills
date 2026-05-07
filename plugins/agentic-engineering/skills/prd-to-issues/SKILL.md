@@ -86,3 +86,7 @@ Reference by number from the parent PRD:
 </issue-template>
 
 Do NOT close or modify the parent PRD file.
+
+## Next
+
+After issues are written, optionally run `write-a-rubric` per AFK issue to define grader-checkable success criteria as a sibling `issues/NNN-*.rubric.md`. Then run `work-issues` to start working the queue.

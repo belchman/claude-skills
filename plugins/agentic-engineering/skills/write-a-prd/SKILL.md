@@ -3,7 +3,11 @@ name: write-a-prd
 description: Interview the user and produce issues/prd.md from a client brief, feature idea, or rough request. Step 1 of the build pipeline (write-a-prd → prd-to-issues → work-issues). Use when no PRD exists yet and one is needed. NOT for breaking an existing PRD into tasks (use prd-to-issues), and NOT for tracker-coupled output (this writes local markdown only). Triggers: /write-a-prd, "write a PRD", "draft a spec", "turn this brief into a PRD".
 ---
 
+# write-a-prd
+
 Invoked when the user wants to create a PRD. Skip steps you judge unnecessary.
+
+0. **Check for an existing PRD.** If `issues/prd.md` already exists, do NOT overwrite. Show the user its current contents and ask: append a new section, replace it, or write to a different filename. Never silently clobber.
 
 1. Ask the user for a long, detailed description of the problem and any solution ideas.
 
@@ -64,3 +68,7 @@ What's out of scope for this PRD.
 Anything else.
 
 </prd-template>
+
+## Next
+
+Run `prd-to-issues` to break the PRD into vertical-slice issue files at `issues/NNN-*.md`.

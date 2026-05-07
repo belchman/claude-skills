@@ -68,9 +68,13 @@ One commit per iteration. Message must include:
 
 Do **not** add Claude as a co-author.
 
+## Rubric check (if a sibling rubric exists)
+
+If `issues/NNN-*.rubric.md` exists alongside the issue, walk its criteria after the commit and report unmet items in the iteration summary. Do **not** gate the commit on unmet items — surface, don't block. The rubric is a sharper restatement of acceptance criteria; the human decides whether unmet items are blockers or follow-ups.
+
 ## Issue housekeeping
 
-- Complete → move to `issues/done/` (create if missing).
+- Complete → move to `issues/done/` (create if missing). Sibling `*.rubric.md` (if present) moves alongside.
 - Incomplete → append a dated note: what you did, what remains, blockers.
 
 ## Hard rules

@@ -1,13 +1,14 @@
 # Routing map for `agentic-engineering`
 
-The `agentic-engineering` plugin (under `plugins/agentic-engineering/`) bundles eleven composable skills. They are designed to compose; the right skill depends on **what artifact you have** and **what artifact you need next**.
+The `agentic-engineering` plugin (under `plugins/agentic-engineering/`) bundles twelve composable skills. They are designed to compose; the right skill depends on **what artifact you have** and **what artifact you need next**.
 
 ## The build pipeline
 
 ```
 nothing yet                  → write-a-prd       → issues/prd.md
 issues/prd.md                → prd-to-issues     → issues/NNN-*.md (HITL or AFK)
-issues/NNN-*.md (AFK)        → work-issues       → commits + issues/done/NNN-*.md
+issues/NNN-*.md              → write-a-rubric    → issues/NNN-*.rubric.md  (optional sidecar)
+issues/NNN-*.md (AFK)        → work-issues       → commits + issues/done/NNN-*.md (rubric travels)
 ```
 
 At any step you can sidestep into:
@@ -27,6 +28,7 @@ At any step you can sidestep into:
 | To brainstorm with no project context at all (rare) | `grill-me` |
 | A PRD from a brief | `write-a-prd` |
 | Work tickets from an existing PRD | `prd-to-issues` |
+| A grader-checkable rubric for an issue/PRD ("what does done look like") | `write-a-rubric` |
 | To autonomously work the issue queue | `/work-issues` (explicit-only) |
 | To debug a bug or perf regression | `diagnose` |
 | To flush out a design before committing | `prototype` |
@@ -53,6 +55,8 @@ At any step you can sidestep into:
 | `issues/*.md` | Local markdown issue queue (HITL or AFK tagged) | `prd-to-issues` |
 | `issues/prd.md` | Project PRD | `write-a-prd` |
 | `issues/done/` | Completed issues archive | `work-issues` |
+| `issues/NNN-*.rubric.md` | Sidecar grader-checkable success criteria for an issue | `write-a-rubric` |
+| `rubrics/*.md` | Free-form / PRD-level rubrics not tied to a specific issue | `write-a-rubric` |
 | `CONTEXT.md` | Project domain glossary (DDD shared language) | `grill-with-docs` (lazily) |
 | `CONTEXT-MAP.md` | Multi-context map (root) | manual |
 | `docs/adr/NNNN-*.md` | Architectural decision records | `grill-with-docs` (lazily, when threshold met) |
