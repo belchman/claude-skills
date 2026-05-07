@@ -2,6 +2,9 @@
 *.swp
 *~
 
+# Local design notes / superpowers brainstorming output (not for the marketplace)
+docs/superpowers/
+
 # Python
 __pycache__/
 *.pyc
