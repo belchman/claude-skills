@@ -12,15 +12,15 @@ It runs a CLAUDE.md linter on every `Edit` or `Write` whose target basename is
 
 ```mermaid
 flowchart TD
-    A[Claude attempts Edit/Write] --> B{PreToolUse matcher<br/>'Edit\|Write'}
+    A[Claude attempts Edit/Write] --> B{"PreToolUse matcher<br/>Edit&#124;Write"}
     B -->|match| C[check-claude-md.sh<br/>reads tool_input JSON from stdin]
     B -->|no match| Z([tool call proceeds])
-    C --> D{basename ==<br/>CLAUDE.md?}
+    C --> D{"basename ==<br/>CLAUDE.md?"}
     D -->|no| Z
-    D -->|yes| E{file exists<br/>on disk?}
+    D -->|yes| E{"file exists<br/>on disk?"}
     E -->|no, new file| Z
     E -->|yes| F[lint-claude-md.sh path]
-    F --> G{linter exit code}
+    F --> G{"linter exit code"}
     G -->|0 pass| Z
     G -->|1 warnings| Z
     G -->|2 errors| H[print lint output to stderr]
