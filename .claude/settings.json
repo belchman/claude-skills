@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          { "type": "command", "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/hooks/block-secrets.sh" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          { "type": "command", "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/hooks/format-on-write.sh" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/hooks/test-on-stop.sh" }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git branch:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(shellcheck:*)",
+      "Bash(markdownlint:*)",
+      "Bash(bash ${CLAUDE_PROJECT_DIR}/tools/lint-claude-md.sh:*)",
+      "Bash(bash ${CLAUDE_PROJECT_DIR}/tools/generate-claude-md.sh:*)",
+      "Bash(bash ${CLAUDE_PROJECT_DIR}/tools/estimate-cost.sh:*)",
+      "Bash(bash ${CLAUDE_PROJECT_DIR}/tools/benchmark.sh --help:*)",
+      "Bash(bash ${CLAUDE_PROJECT_DIR}/tools/benchmark-summary.sh:*)",
+      "Read",
+      "Glob",
+      "Grep"
+    ],
+    "deny": [
+      "Bash(git push:*)",
+      "Bash(rm -rf:*)"
+    ]
+  }
+}
