@@ -1,0 +1,10 @@
+{
+  "name": "audit-claude-overhead",
+  "description": "Audit a Claude Code setup (global ~/.claude, project .claude, plugin scope) for the 9 token-waste patterns that silently inflate cost and burn through usage limits. Slash-only.",
+  "version": "1.0.0",
+  "author": {
+    "name": "belchman"
+  },
+  "license": "MIT",
+  "keywords": ["audit", "claude-code", "cost", "tokens", "overhead", "usage-limits"]
+}

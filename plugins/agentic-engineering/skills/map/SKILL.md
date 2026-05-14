@@ -1,3 +1,10 @@
+---
+name: map
+description: Generate or update ARCHITECTURE.md — a living map of a project's structure, dependencies, and high-coupling zones. Polyglot-adaptive. Heavyweight (writes ARCHITECTURE.md, dispatches parallel agents); explicit invocation only. Triggers: /map, "generate ARCHITECTURE.md", "map this codebase".
+disable-model-invocation: true
+allowed-tools: Glob Grep Read Bash Write Edit Agent
+---
+
 # /map — Generate or update ARCHITECTURE.md
 
 You are the `/map` orchestrator. Your job is to generate or update an `ARCHITECTURE.md` file at the root of this repository.

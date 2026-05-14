@@ -1,6 +1,6 @@
 # Routing map for `agentic-engineering`
 
-The `agentic-engineering` plugin (under `plugins/agentic-engineering/`) bundles twelve composable skills. They are designed to compose; the right skill depends on **what artifact you have** and **what artifact you need next**.
+The `agentic-engineering` plugin (under `plugins/agentic-engineering/`) bundles the composable skills below. They are designed to compose; the right skill depends on **what artifact you have** and **what artifact you need next**. Note: `audit-claude-overhead` was extracted to its own standalone plugin (`plugins/audit-claude-overhead/`) and is no longer part of `agentic-engineering`.
 
 ## The build pipeline
 
@@ -19,6 +19,9 @@ At any step you can sidestep into:
 - `prototype` — when "what should this look like?" or "does this state model feel right?" needs a throwaway sketch
 - `diagnose` — when something is broken
 - `zoom-out` — when you don't know how this code fits
+- `evolve` — evaluator-driven search loop when you have a measurable score and want 50–200 candidates, not 5
+- `crap` — rank functions by CRAP score (complexity × lack of effective coverage), then propose either a refactor or missing tests for the worst offender
+- `/map` — generate or update `ARCHITECTURE.md` (slash-only)
 
 ## Decision tree
 
@@ -34,8 +37,11 @@ At any step you can sidestep into:
 | To flush out a design before committing | `prototype` |
 | To find architectural friction / deep-module candidates | `improve-codebase-architecture` |
 | TDD on a behavior change | `tdd` |
+| To search for a better solution against a measurable evaluator (algorithm tuning, prompt search, pipeline optimization — any "best-of-N under a score") | `evolve` |
 | To understand unfamiliar code | `/zoom-out` (explicit-only) |
-| To audit Claude Code's own overhead (cost, hooks, plugins) | `/audit-claude-overhead` (explicit-only) |
+| To find the riskiest function on the branch (complexity × poor coverage) | `crap` |
+| To generate or update `ARCHITECTURE.md` | `/map` (explicit-only) |
+| To audit Claude Code's own overhead (cost, hooks, plugins) | `/audit-claude-overhead` — now its own plugin (`plugins/audit-claude-overhead/`) |
 
 ## Pairs that look similar — pick which
 
@@ -47,6 +53,8 @@ At any step you can sidestep into:
 | PRD work | `prd-to-issues` | Going from `issues/prd.md` → individual issue files |
 | Things "going wrong" | `diagnose` | Bug or perf regression in **user code** |
 | Things "going wrong" | `audit-claude-overhead` | **Claude Code itself** is slow / hitting limits |
+| Iterating on code | `tdd` | Behavior change with a clear spec. |
+| Iterating on code | `evolve` | Open-ended search where the spec is *a score*, not a behavior — and you want 50–200 candidates per run with a cognition store + experiment DB. |
 
 ## Conventions assumed by these skills
 
@@ -60,6 +68,7 @@ At any step you can sidestep into:
 | `CONTEXT.md` | Project domain glossary (DDD shared language) | `grill-with-docs` (lazily) |
 | `CONTEXT-MAP.md` | Multi-context map (root) | manual |
 | `docs/adr/NNNN-*.md` | Architectural decision records | `grill-with-docs` (lazily, when threshold met) |
+| `.evolve_runs/<run-name>/` | Per-run state: `run_spec.yaml`, `cognition_seed.md`, `preflight_summary.md`, `cognition_data/`, `database_data/`, `steps/`, `best/` | `evolve` |
 
 **ADR threshold** (offer an ADR only when ALL three hold):
 
@@ -71,12 +80,13 @@ At any step you can sidestep into:
 
 These have `disable-model-invocation: true` and only fire on explicit slash invocation:
 
-- `/audit-claude-overhead` — walks plugin scope, ~5KB SKILL.md + audit script
 - `/work-issues` — commits code, modifies the issue queue
 - `/zoom-out` — narrowly purposed micro-skill
+- `/map` — writes `ARCHITECTURE.md`, dispatches parallel agents
+- `/audit-claude-overhead` — walks plugin scope, ~5KB SKILL.md + audit script (now in its own plugin)
 
 The orchestrator will not auto-invoke these. The user must explicitly type the slash command.
 
 ## Attribution
 
-Several skills are vendored from `mattpocock/skills` (MIT). Per-file attribution: `plugins/agentic-engineering/ATTRIBUTION.md`. License text: `plugins/agentic-engineering/licenses/`.
+Several skills are vendored from `mattpocock/skills` (MIT) and `GAIR-NLP/ASI-Evolve` (Apache 2.0). Per-file attribution: `plugins/agentic-engineering/ATTRIBUTION.md`. License texts: `plugins/agentic-engineering/licenses/`.
