@@ -8,15 +8,6 @@
   },
   "plugins": [
     {
-      "name": "adversarial-review",
-      "description": "Three parallel reviewer agents find contradictions, config gaps, and coverage holes — then fix what you approve.",
-      "version": "1.0.0",
-      "source": "./plugins/adversarial-review",
-      "author": {
-        "name": "belchman"
-      }
-    },
-    {
       "name": "claude-md-audit",
       "description": "Example plugin: PreToolUse hook that lints CLAUDE.md on every Edit/Write and blocks writes that introduce structural errors.",
       "version": "1.0.0",
