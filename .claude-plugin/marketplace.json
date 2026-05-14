@@ -35,6 +35,15 @@
       }
     },
     {
+      "name": "claude-md-audit",
+      "description": "Example plugin: PreToolUse hook that lints CLAUDE.md on every Edit/Write and blocks writes that introduce structural errors.",
+      "version": "1.0.0",
+      "source": "./plugins/claude-md-audit",
+      "author": {
+        "name": "belchman"
+      }
+    },
+    {
       "name": "agentic-engineering",
       "description": "Twelve composable skills for AI-agentic engineering: PRD → issues → rubrics → autonomous work pipeline, plus TDD, architectural deepening, bug diagnosis, prototyping, domain interrogation (CONTEXT.md/ADR-aware), navigation, and Claude Code overhead audit.",
       "version": "1.1.0",
