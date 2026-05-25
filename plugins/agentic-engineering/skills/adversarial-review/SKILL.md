@@ -1,6 +1,6 @@
 ---
 name: adversarial-review
-description: Three parallel reviewer agents find contradictions, config gaps, and coverage holes across a project's docs, config, and tests — then fix what you approve. Heavyweight (dispatches parallel agents, can modify files); explicit invocation only. Triggers: /adversarial-review, "adversarial review", "find gaps in my docs/config".
+description: 'Three parallel reviewer agents find contradictions, config gaps, and coverage holes across a project''s docs, config, and tests — then fix what you approve. Heavyweight (dispatches parallel agents, can modify files); explicit invocation only. Triggers: /adversarial-review, "adversarial review", "find gaps in my docs/config".'
 disable-model-invocation: true
 allowed-tools: Glob Grep Read Bash Write Edit Agent AskUserQuestion
 ---

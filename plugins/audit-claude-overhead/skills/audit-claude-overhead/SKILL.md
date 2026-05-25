@@ -1,6 +1,6 @@
 ---
 name: audit-claude-overhead
-description: Audit a Claude Code setup (global ~/.claude AND project .claude AND plugin scope) for the 9 token-waste patterns that silently inflate cost and burn through usage limits. Outputs a per-pattern score against thresholds and proposes specific fixes — applied only with user approval. Heavyweight (~5KB SKILL.md + audit script); explicit invocation only. Triggers: /audit-claude-overhead, "audit my Claude Code setup", "why am I hitting usage limits".
+description: 'Audit a Claude Code setup (global ~/.claude AND project .claude AND plugin scope) for the 9 token-waste patterns that silently inflate cost and burn through usage limits. Outputs a per-pattern score against thresholds and proposes specific fixes — applied only with user approval. Heavyweight (~5KB SKILL.md + audit script); explicit invocation only. Triggers: /audit-claude-overhead, "audit my Claude Code setup", "why am I hitting usage limits".'
 disable-model-invocation: true
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: grill-with-docs
-description: Stress-test a plan, design, or idea against the project's domain language (CONTEXT.md) and recorded decisions (docs/adr/). One question at a time, walks the decision tree, captures crystallized terminology and decisions inline. THIS IS THE DEFAULT GRILLING SKILL — use for any interrogation in a real project, even if CONTEXT.md or docs/adr/ don't exist yet (they get created lazily on first term resolution / first ADR-worthy decision). Triggers: /grill-with-docs, "grill me", "grill this", "interrogate this plan", "stress-test this design", "walk me through the decisions", "challenge this". Use grill-me ONLY for pure green-field thinking with no codebase at all — rare.
+description: 'Stress-test a plan, design, or idea against the project''s domain language (CONTEXT.md) and recorded decisions (docs/adr/). One question at a time, walks the decision tree, captures crystallized terminology and decisions inline. THIS IS THE DEFAULT GRILLING SKILL — use for any interrogation in a real project, even if CONTEXT.md or docs/adr/ don''t exist yet (they get created lazily on first term resolution / first ADR-worthy decision). Triggers: /grill-with-docs, "grill me", "grill this", "interrogate this plan", "stress-test this design", "walk me through the decisions", "challenge this". Use grill-me ONLY for pure green-field thinking with no codebase at all — rare.'
 ---
 
 # grill-with-docs

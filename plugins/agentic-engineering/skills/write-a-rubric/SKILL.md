@@ -1,6 +1,6 @@
 ---
 name: write-a-rubric
-description: Produce a gradeable rubric file from an issue, PRD, or free-form goal — sharpened to the standard required by Anthropic's Managed Agents user.define_outcome event. Sidecar artifact (issues/NNN-*.rubric.md or rubrics/<slug>.md); does not modify source files. Use when the user wants to define "what done looks like" for grader-checkable success criteria. Triggers: /write-a-rubric, "write a rubric", "outcome rubric", "define-outcome", "managed-agent outcome", "make this gradeable".
+description: 'Produce a gradeable rubric file from an issue, PRD, or free-form goal — sharpened to the standard required by Anthropic''s Managed Agents user.define_outcome event. Sidecar artifact (issues/NNN-*.rubric.md or rubrics/<slug>.md); does not modify source files. Use when the user wants to define "what done looks like" for grader-checkable success criteria. Triggers: /write-a-rubric, "write a rubric", "outcome rubric", "define-outcome", "managed-agent outcome", "make this gradeable".'
 ---
 
 # write-a-rubric
