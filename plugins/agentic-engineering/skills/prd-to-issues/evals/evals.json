@@ -1,0 +1,23 @@
+{
+  "skill_name": "prd-to-issues",
+  "evals": [
+    {
+      "id": 1,
+      "name": "atomic-breakdown",
+      "prompt": "Break this PRD into atomic issues. The PRD is at issues/prd.md.",
+      "files": ["issues/prd.md"]
+    },
+    {
+      "id": 2,
+      "name": "hitl-afk-dependency-order",
+      "prompt": "Slice issues/prd.md into HITL and AFK issues. Order by dependency.",
+      "files": ["issues/prd.md"]
+    },
+    {
+      "id": 3,
+      "name": "numbered-shippable-files",
+      "prompt": "Convert issues/prd.md into NNN-numbered issue files I can ship.",
+      "files": ["issues/prd.md"]
+    }
+  ]
+}

@@ -60,6 +60,10 @@ Do NOT use `gh issue create` or any GitHub CLI. Do NOT reference GitHub issue nu
 
 `issues/prd.md` (or whichever PRD was used)
 
+## Type
+
+**HITL** or **AFK** — pick one. HITL means a human needs to be in the loop (design review, credentials, architectural call). AFK means it can be picked up and merged autonomously.
+
 ## What to build
 
 Concise description of this vertical slice. End-to-end behavior, not layer-by-layer implementation. Reference sections of the parent PRD rather than duplicating.
