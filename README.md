@@ -41,17 +41,87 @@ Convention: skills produce/consume a small set of files (`issues/*.md`, `issues/
 
 End-to-end orchestrator. One brief in, a vertically-sliced feature out, **three human checkpoints** between (approve story, approve spec+rubric, approve PR). Every step between checkpoints runs in a fresh `claude -p` subprocess so context never collapses. Resumable across terminal close, machine reboot, week-long pauses — state is journaled to `.feature_runs/<id>/state.json` after every step.
 
+```mermaid
+%%{ init: { 'theme': 'base', 'themeVariables': {
+  'primaryColor': '#eff6ff',
+  'primaryTextColor': '#0f172a',
+  'primaryBorderColor': '#2563eb',
+  'lineColor': '#475569',
+  'fontFamily': 'ui-sans-serif, system-ui, sans-serif',
+  'fontSize': '14px'
+}}}%%
+flowchart TD
+    Brief(["📝 <b>Brief</b><br/><i>one sentence in</i>"])
+
+    subgraph Discover ["&nbsp;🗺️ &nbsp;<b>Discover</b>&nbsp;"]
+        direction TB
+        Map["<code>/map</code><br/>↳ ARCHITECTURE.md"]
+        Research["Explore researcher<br/>↳ <code>*.research.md</code>"]
+        Story["story drafter<br/>↳ <code>issues/NNN-*.md</code>"]
+        Map --> Research --> Story
+    end
+
+    subgraph Plan ["&nbsp;📐 &nbsp;<b>Plan</b>&nbsp;"]
+        direction TB
+        Spec["<code>write-a-spec</code><br/>↳ <code>*.spec.md</code><br/><i>(lane allowlist)</i>"]
+        Rubric["<code>write-a-rubric</code><br/>↳ <code>*.rubric.md</code>"]
+        Spec --> Rubric
+    end
+
+    subgraph Build ["&nbsp;🔨 &nbsp;<b>Build &amp; Validate</b> · lane-scoped&nbsp;"]
+        direction TB
+        BLane["<code>/work-issues</code> · <b>backend</b><br/><i>tdd · commit</i>"]
+        BVal{{"🔍 <code>/adversarial-review</code><br/>backend validator"}}
+        FLane["<code>/work-issues</code> · <b>frontend</b><br/><i>tdd · commit</i>"]
+        FVal{{"🔍 <code>/adversarial-review</code><br/>final validator"}}
+        BLane --> BVal
+        BVal -->|✓ clean| FLane
+        BVal -.->|🚨 critical| BLane
+        FLane --> FVal
+        FVal -.->|🚨 critical| FLane
+    end
+
+    Done(["🎉 <b>PR opened</b><br/><i>run.done</i>"])
+
+    CP1[/"⏸️&nbsp;<b>CP1</b> · approve story?"\]
+    CP2[/"⏸️&nbsp;<b>CP2</b> · approve spec + rubric?"\]
+    CP3[/"⏸️&nbsp;<b>CP3</b> · approve PR?"\]
+
+    Brief ==> Discover
+    Discover ==> CP1
+    CP1 ==>|✓ accept| Plan
+    CP1 -.->|🔁 redo| Story
+    Plan ==> CP2
+    CP2 ==>|✓ accept| BLane
+    CP2 -.->|🔁 redo| Spec
+    FVal ==>|✓ clean| CP3
+    CP3 ==>|✓ accept| Done
+    CP3 -.->|🔁 redo| BLane
+
+    classDef checkpoint fill:#fef3c7,stroke:#d97706,stroke-width:3px,color:#78350f
+    classDef skill fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e3a8a
+    classDef validator fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d
+    classDef terminal fill:#d1fae5,stroke:#059669,stroke-width:3px,color:#064e3b
+
+    class CP1,CP2,CP3 checkpoint
+    class Map,Research,Story,Spec,Rubric,BLane,FLane skill
+    class BVal,FVal validator
+    class Brief,Done terminal
+```
+
+**Solid arrows** = forward progress. **Dotted arrows** = `--redo` (user requested a re-run) or critical-finding loopback (validator caught something; orchestrator re-invokes the lane). **Hexagonal validators** read the diff after each lane and route Critical findings back into the lane that owns the failing path. **Trapezoid checkpoints** are the three human gates — accept advances to the next phase, redo reruns with feedback.
+
 ```
 /feature "Add invoice reminders for invoices unpaid >7 days"
 # → creates run id, drafts research + story
 # → pauses at Checkpoint 1
-/feature continue <id> --accept      # advance through to next checkpoint
+/feature continue <id> --accept              # advance through to next checkpoint
 /feature continue <id> --redo "<feedback>"   # re-run the current step with feedback
-/feature abort <id>                  # give up, release LOCK
-/feature status <id>                 # human-readable state.json
+/feature abort <id>                          # give up, release LOCK
+/feature status <id>                         # human-readable state.json
 ```
 
-The chain: `/map` refresh → Explore researcher → story → `write-a-spec` → `write-a-rubric` → backend lane via `/work-issues` → `/adversarial-review` validator → frontend lane via `/work-issues` → final `/adversarial-review` → PR. Validator findings tagged Critical re-dispatch the lane that owns the failing path. Slash-only; auto-invocation guarded by `disable-model-invocation: true`. Full chain + failure modes: [`docs/plans/feature-factory.md`](docs/plans/feature-factory.md). Build retrospective: [`docs/lessons-learned/feature-factory-build.md`](docs/lessons-learned/feature-factory-build.md).
+Slash-only; auto-invocation guarded by `disable-model-invocation: true`. Full chain + failure modes: [`docs/plans/feature-factory.md`](docs/plans/feature-factory.md). Build retrospective: [`docs/lessons-learned/feature-factory-build.md`](docs/lessons-learned/feature-factory-build.md).
 
 #### Notable: `/map`
 
