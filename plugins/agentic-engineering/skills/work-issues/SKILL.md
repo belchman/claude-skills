@@ -47,6 +47,10 @@ If the task fits TDD (testable behavior change), use the `tdd` skill. Otherwise:
 
 Don't bundle unrelated work. If you find a second problem, append a note to its issue file or open a new one — don't fix it now.
 
+## Lane preamble (honor if present)
+
+If a lane preamble has been prepended to this prompt — a leading block that defines an `## Allowlist` of literal file paths — you may only edit files that match the allowlist. Never silently expand it. If implementation requires editing a file outside the allowlist, append an `## Allowlist additions requested` section to the issue file with one bullet per needed path, each naming the path and a one-sentence reason why the lane needs it, then stop and exit the iteration. The orchestrator surfaces these requests at the next checkpoint. When no lane preamble is present (the default, e.g. direct `/work-issues` invocation), this section does not apply — proceed as usual.
+
 ## Feedback loops
 
 Detect and run the project's loops before committing:
