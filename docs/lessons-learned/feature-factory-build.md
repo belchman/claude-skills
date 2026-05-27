@@ -43,3 +43,44 @@ Translating these lessons per Round 6 protocol (lessons → skill edits, ADRs, o
 Smooth. The 6 tests + 1 reviewer pass surfaced and fixed 2 real regressions before commit. The plan's precursor was justified — `strip_frontmatter` drift between once.sh and loop.sh (the dead `done_fm` var in loop.sh) confirmed code duplication had already produced a small divergence in this codebase. The lib extraction also gives `feature-helpers.sh` (Round 3+) a clean place to land its allowlist/severity helpers.
 
 Ready to proceed to Round 1: `write-a-prd` on the feature factory itself.
+
+---
+
+## Round 1 — write the spec for the factory itself
+
+**Date:** 2026-05-27
+
+**Skills dogfooded:** `write-a-prd`, `prd-to-issues`, `write-a-rubric` (x6, parallel subagents).
+
+**Final state:** `issues/prd.md` (12KB), 6 issue files (`001-write-a-spec-skill.md` through `006-routing-docs-updates.md`) all AFK-tagged with explicit `Blocked by` chains, 6 sidecar rubrics — 38–183 lines each, 11–33 criteria each. Total: 13 new files in `issues/`. No commit yet — pending Round 2.
+
+### What worked
+
+- **Seeding `write-a-prd` with the rev. 2 plan as the brief was the right move.** Saved an exhausting interview. The skill's `AskUserQuestion` step still let me capture the *user/business* context the plan didn't have (actor scope, success metric, rollout, timeline). Four questions, four answers, PRD drafted. The skill's "skip steps you judge unnecessary" hint at the top is genuinely permissive.
+- **`prd-to-issues`'s granularity quiz fits skill-creation work fine.** The "skill-creation tickets may legitimately be horizontal" framing was honored — issue 001 is one ticket per new skill, not one ticket per layer. Six issues felt right (after the quiz proposed 6 vs 9 vs 5; I went with 6).
+- **Parallel rubric dispatch (6 subagents) was a big speedup.** All 6 ran in roughly the time of a single sequential invocation. Each rubric came back with the discipline the rev. 2 `write-a-rubric` skill encodes (IDs, `Check:` hints, leanness, anti-patterns).
+- **All 6 rubrics named concrete grader observations** (`grep` patterns, `git diff` ranges, exit codes, test names). Zero taste-based criteria, zero conversation-dependent items. The Round 0 rubric eval clearly improved the skill — these rubrics are noticeably tighter than what the rev. 1 skill produced.
+
+### What didn't work / friction encountered
+
+- **Issue 001's rubric is large (33 criteria, 183 lines) — at the upper bound of the skill's leanness guidance.** New-skill creation tickets have genuinely more surface than env-var tweaks, so this isn't strictly bloated, but it's near the cap. If `/work-issues` (Round 3) struggles with rubric size during the lane-walk step, this is the first place to look. Consider whether issue 001 should have been sliced (e.g., separate "write-a-spec SKILL.md" from "write-a-spec evals") — the granularity quiz didn't surface this option as a question, only proposed "split orchestrator" or "merge lane support."
+  - **Action (deferred to Round 6):** consider adding a "split per-artifact" option to `prd-to-issues`'s granularity quiz for skill-creation tickets.
+- **`prd-to-issues`'s quiz proposes only 3 alternatives.** No "tell me your own granularity" escape. For meta-work where the user has strong opinions, this funnels you into one of the pre-baked options. In this round the recommended option was right; could bite in other rounds.
+  - **Action (deferred to Round 6):** consider whether `prd-to-issues` should allow free-form granularity input.
+- **No-issue dependency between rubric writing and prd-to-issues** — I had to run prd-to-issues first, get the 6 issue files, then dispatch 6 rubric subagents. Each rubric subagent re-reads the issue file from disk. If the issue file is large, that's wasted token spend. Minor — not actionable.
+
+### Skill / process changes worth landing
+
+Nothing blocks Round 2. Captured deferred items above are Round 6 candidates.
+
+**Pre-Round-2 status check (per user rule "fix what's broken before next round"):**
+- write-a-prd: worked, no fix needed.
+- prd-to-issues: worked; the quiz limitations are notes for Round 6, not blockers.
+- write-a-rubric: rev. 2 skill performed at the quality the iter-2 evals predicted. No fix needed.
+- adversarial-review flag fix (from Round 0) is still in place — verified Skill tool can still load it.
+
+### Round 1 verdict
+
+Smooth. The dogfooding loop produced 13 working artifacts in one Round, and the existing skills handled meta-work (building skills with skills) competently. Issue 001's rubric size is the only flag worth watching during Round 3 implementation.
+
+Ready to proceed to Round 2: `grill-with-docs` on the design of `write-a-spec` (issue 001 + rubric + plan §C). Goal: surface ambiguities the rubric doesn't catch before any builder picks the issue up.
