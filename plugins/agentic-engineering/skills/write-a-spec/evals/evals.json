@@ -1,0 +1,69 @@
+{
+  "skill_name": "write-a-spec",
+  "evals": [
+    {
+      "id": 1,
+      "name": "typical-multi-lane-issue",
+      "prompt": "Use the write-a-spec skill to produce a spec for /Users/matt/Projects/claude-skills/issues/typical-issue-rate-limit.md. The CLAUDE.md ## Lane boundaries section defines Backend and Frontend lanes.",
+      "expected_output": "A spec file at issues/typical-issue-rate-limit.spec.md with all seven required H2 sections, two H3 lanes (### Backend and ### Frontend) each with its own fenced ```paths block containing 3-6 literal paths per lane, a Tests required section with at least 4 behavior bullets, and the closing one-liner referencing /feature or prd-to-issues.",
+      "files": [
+        {
+          "path": "issues/typical-issue-rate-limit.md",
+          "content": "# Per-API-key rate limiting on /v1/*\n\nType: AFK\n\n## Context\n\nPublic API at api.acme.dev/v1/* is unmetered. Need per-API-key rate limit, configurable per plan (free/pro/enterprise) from config/plans.yaml. New middleware sits after auth in /v1/* chain; counters in Redis.\n\n## Acceptance criteria\n\n- Over-minute-limit → 429 + Retry-After.\n- Over-day-limit → 429 + JSON body with cap and UTC reset.\n- Enterprise bypasses.\n- Limits read from config/plans.yaml at startup.\n- Admin UI shows current usage per key.\n- Unit + integration tests cover under-limit, at-limit, over-limit-minute, over-limit-day, enterprise-bypass.\n"
+        },
+        {
+          "path": "CLAUDE.md",
+          "content": "# Project conventions\n\n## Lane boundaries\n\n- **Backend** — `src/api/**`, `src/services/**`, `src/jobs/**`, `tests/services/**`\n- **Frontend** — `web/components/**`, `web/hooks/**`, `tests/components/**`\n"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "thin-issue-with-assumptions",
+      "prompt": "Use the write-a-spec skill to produce a spec for /Users/matt/Projects/claude-skills/issues/thin-search-issue.md. There is no research dump at issues/research/. The CLAUDE.md ## Lane boundaries section defines Backend and Frontend lanes.",
+      "expected_output": "A spec file at issues/thin-search-issue.spec.md. Because the source issue is sparse AND the research dump is missing, the spec's Risks section MUST contain at least one bullet about the absent research pass, and the Risks/Open questions section should explicitly mark assumptions. All seven template sections still appear (N/A sections explain why).",
+      "files": [
+        {
+          "path": "issues/thin-search-issue.md",
+          "content": "# search is bad\n\nType: AFK\n\nUsers complain. Fix it.\n"
+        },
+        {
+          "path": "CLAUDE.md",
+          "content": "# Project conventions\n\n## Lane boundaries\n\n- **Backend** — `src/search/**`, `tests/search/**`\n- **Frontend** — `web/search/**`, `tests/web/search/**`\n"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "single-lane-cli-feature",
+      "prompt": "Use the write-a-spec skill to produce a spec for /Users/matt/Projects/claude-skills/issues/cli-version-flag.md. The CLAUDE.md ## Lane boundaries section defines CLI and Backend lanes; this feature is CLI-only.",
+      "expected_output": "A spec file at issues/cli-version-flag.spec.md that contains ONLY a ### CLI lane H3 in the File-by-file change list — the Backend lane heading must NOT appear (no empty paths block). Confirms single-lane handling per the skill body.",
+      "files": [
+        {
+          "path": "issues/cli-version-flag.md",
+          "content": "# Add /version subcommand to crap\n\nType: AFK\n\nUsers want a way to see which version of crap they're running for bug reports. Add a `/version` subcommand that prints the git sha of crap.py.\n"
+        },
+        {
+          "path": "CLAUDE.md",
+          "content": "# Project conventions\n\n## Lane boundaries\n\n- **CLI** — `plugins/agentic-engineering/skills/crap/crap.py`, `tests/test_crap.py`\n- **Backend** — `plugins/agentic-engineering/skills/crap/server/**` (future API)\n"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "missing-claude-md-lane-boundaries",
+      "prompt": "Use the write-a-spec skill to produce a spec for /Users/matt/Projects/claude-skills/issues/typical-payment.md. The CLAUDE.md exists but has no ## Lane boundaries section.",
+      "expected_output": "The skill should ask the user once for the project's lane vocabulary BEFORE producing the spec, per the SKILL.md 'Lane discovery' section's hard rule ('don't invent lanes silently'). In AFK mode it may write a QUESTIONS.md sibling listing what it would have asked, then produce a best-guess spec with assumptions explicitly marked.",
+      "files": [
+        {
+          "path": "issues/typical-payment.md",
+          "content": "# Add Stripe webhook handler for payment.succeeded\n\nType: AFK\n\nWhen Stripe sends a `payment.succeeded` event, mark the invoice paid and send a receipt email. Webhook signature must be verified.\n"
+        },
+        {
+          "path": "CLAUDE.md",
+          "content": "# Project conventions\n\nStandard Node/React stack. Tests via Jest.\n"
+        }
+      ]
+    }
+  ]
+}
