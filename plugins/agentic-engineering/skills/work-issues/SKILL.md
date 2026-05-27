@@ -12,14 +12,16 @@ Do exactly **one** AFK task end-to-end, then stop. Headless wrappers (`bin/loop.
 
 You need two things in context:
 
-- **Issues**: every `*.md` under `issues/` (or whatever the project uses). AFK-eligible only — skip anything tagged HITL.
+- **Issues**: every `*.md` directly under `issues/` (or whatever the project uses), EXCLUDING sidecar suffixes (`*.rubric.md`, `*.spec.md`, `*.research.md`). Subdirectories like `issues/research/` are not recursed into. AFK-eligible only — skip anything tagged HITL.
 - **Recent commits**: last ~5 commits, so you don't repeat or undo prior work.
 
-Headless mode pre-pastes both into the prompt. Interactive mode (e.g. `/work-issues`) — gather them yourself:
+Headless mode pre-pastes both into the prompt (the wrappers use `list_issue_files` from `bin/work-issues-lib.sh` to honor the exclusion). Interactive mode (e.g. `/work-issues`) — gather them yourself:
 
 ```bash
 git log -n 5 --format="%H%n%ad%n%B---" --date=short
-ls issues/*.md  # then read the relevant ones
+find issues -maxdepth 1 -type f -name '*.md' \
+  -not -name '*.rubric.md' -not -name '*.spec.md' -not -name '*.research.md'
+# then read the relevant ones
 ```
 
 If `issues/` doesn't exist, ask the user where the queue lives or whether to run `prd-to-issues` first. Don't invent tasks.
