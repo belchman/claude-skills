@@ -128,6 +128,228 @@ test_list_issue_files_sorted_numerically() {
   assert_eq "list_issue_files is sorted (stable order for the prompt)" "$want" "$got"
 }
 
+# ---- behavior: allowlist_for extracts paths from named lane ---------------
+
+test_allowlist_for_happy_path() {
+  # shellcheck disable=SC1090
+  source "$lib"
+  local spec
+  spec=$(mktemp)
+  cat > "$spec" <<'EOF'
+# Some feature — Spec
+
+## File-by-file change list
+
+### Backend
+
+```paths
+src/api/handlers/invoices.ts
+src/services/invoice-reminder.ts
+```
+
+### Frontend
+
+```paths
+web/components/billing/ReminderCard.tsx
+web/hooks/useInvoiceReminders.ts
+```
+EOF
+  local got want
+  got=$(allowlist_for "$spec" Backend)
+  want=$'src/api/handlers/invoices.ts\nsrc/services/invoice-reminder.ts'
+  rm -f "$spec"
+  assert_eq "allowlist_for: extracts only named lane's paths in source order" "$want" "$got"
+}
+
+# ---- behavior: allowlist_for on a lane that's not in the spec -------------
+
+test_allowlist_for_lane_not_found() {
+  # shellcheck disable=SC1090
+  source "$lib"
+  local spec err_log
+  spec=$(mktemp); err_log=$(mktemp)
+  cat > "$spec" <<'EOF'
+### Backend
+
+```paths
+src/a.ts
+```
+EOF
+  local got err exit_code
+  got=$(allowlist_for "$spec" Frontend 2>"$err_log"); exit_code=$?
+  err=$(cat "$err_log")
+  rm -f "$spec" "$err_log"
+  assert_eq "allowlist_for: lane-not-found → empty stdout" "" "$got"
+  assert_eq "allowlist_for: lane-not-found → empty stderr" "" "$err"
+  assert_eq "allowlist_for: lane-not-found → exit 0" "0" "$exit_code"
+}
+
+# ---- behavior: allowlist_for on a missing spec file ------------------------
+
+test_allowlist_for_missing_file() {
+  # shellcheck disable=SC1090
+  source "$lib"
+  local got err err_log exit_code
+  err_log=$(mktemp)
+  got=$(allowlist_for /no/such/spec.md Backend 2>"$err_log"); exit_code=$?
+  err=$(cat "$err_log")
+  rm -f "$err_log"
+  assert_eq "allowlist_for: missing file → empty stdout" "" "$got"
+  assert_eq "allowlist_for: missing file → empty stderr" "" "$err"
+  assert_eq "allowlist_for: missing file → exit 0" "0" "$exit_code"
+}
+
+# ---- behavior: allowlist_for on H3 heading with no following paths block ---
+# Per AF-4: behavior pinned by test. Documented in lib header as "empty stdout + exit 0".
+
+test_allowlist_for_malformed_no_paths_block() {
+  # shellcheck disable=SC1090
+  source "$lib"
+  local spec err_log
+  spec=$(mktemp); err_log=$(mktemp)
+  cat > "$spec" <<'EOF'
+### Backend
+
+Some prose. No fenced paths block here.
+
+### Frontend
+
+```paths
+web/a.tsx
+```
+EOF
+  local got err exit_code
+  got=$(allowlist_for "$spec" Backend 2>"$err_log"); exit_code=$?
+  err=$(cat "$err_log")
+  rm -f "$spec" "$err_log"
+  assert_eq "allowlist_for: malformed (H3 without paths fence) → empty stdout" "" "$got"
+  assert_eq "allowlist_for: malformed → empty stderr (consistent with lane-not-found)" "" "$err"
+  assert_eq "allowlist_for: malformed → exit 0" "0" "$exit_code"
+}
+
+# ---- behavior: allowlist_for filters by lane (no cross-lane bleed) ---------
+
+test_allowlist_for_no_cross_lane_bleed() {
+  # shellcheck disable=SC1090
+  source "$lib"
+  local spec
+  spec=$(mktemp)
+  cat > "$spec" <<'EOF'
+### Backend
+```paths
+src/api.ts
+src/svc.ts
+```
+### Frontend
+```paths
+web/c.tsx
+web/d.tsx
+```
+EOF
+  local got want
+  got=$(allowlist_for "$spec" Frontend)
+  want=$'web/c.tsx\nweb/d.tsx'
+  rm -f "$spec"
+  assert_eq "allowlist_for: requesting Frontend returns ONLY Frontend paths" "$want" "$got"
+}
+
+# ---- behavior: route_findings classifies each finding by lane allowlist ----
+
+test_route_findings_happy_path() {
+  # shellcheck disable=SC1090
+  source "$lib"
+  local spec findings
+  spec=$(mktemp); findings=$(mktemp)
+  cat > "$spec" <<'EOF'
+### Backend
+```paths
+src/api/handlers/invoices.ts
+src/services/invoice-reminder.ts
+```
+### Frontend
+```paths
+web/components/ReminderCard.tsx
+```
+EOF
+  cat > "$findings" <<'EOF'
+1. src/api/handlers/invoices.ts:42 — missing auth check
+2. web/components/ReminderCard.tsx:8 — no loading state
+3. config/plans.yaml:5 — limit value should be 100, not 1000
+EOF
+  local got
+  got=$(route_findings "$findings" "$spec")
+  rm -f "$spec" "$findings"
+  # Expect: one line per finding, tab-separated lane + full original line
+  local expected
+  expected=$'Backend\t1. src/api/handlers/invoices.ts:42 — missing auth check\nFrontend\t2. web/components/ReminderCard.tsx:8 — no loading state\n<unmapped>\t3. config/plans.yaml:5 — limit value should be 100, not 1000'
+  assert_eq "route_findings: classifies each finding by lane (incl. <unmapped>)" "$expected" "$got"
+}
+
+# ---- behavior: route_findings on an empty findings file -------------------
+
+test_route_findings_empty() {
+  # shellcheck disable=SC1090
+  source "$lib"
+  local spec findings err_log
+  spec=$(mktemp); findings=$(mktemp); err_log=$(mktemp)
+  cat > "$spec" <<'EOF'
+### Backend
+```paths
+src/a.ts
+```
+EOF
+  : > "$findings"  # truncate to empty
+  local got err exit_code
+  got=$(route_findings "$findings" "$spec" 2>"$err_log"); exit_code=$?
+  err=$(cat "$err_log")
+  rm -f "$spec" "$findings" "$err_log"
+  assert_eq "route_findings: empty findings → empty stdout" "" "$got"
+  assert_eq "route_findings: empty findings → empty stderr" "" "$err"
+  assert_eq "route_findings: empty findings → exit 0" "0" "$exit_code"
+}
+
+# ---- behavior: route_findings fails loud on cross-lane duplicate paths ----
+
+test_route_findings_fail_loud_on_duplicate() {
+  # shellcheck disable=SC1090
+  source "$lib"
+  local spec findings err_log
+  spec=$(mktemp); findings=$(mktemp); err_log=$(mktemp)
+  cat > "$spec" <<'EOF'
+### Backend
+```paths
+src/shared.ts
+```
+### Frontend
+```paths
+src/shared.ts
+```
+EOF
+  cat > "$findings" <<'EOF'
+1. src/shared.ts:1 — something
+EOF
+  local got err exit_code
+  got=$(route_findings "$findings" "$spec" 2>"$err_log"); exit_code=$?
+  err=$(cat "$err_log")
+  rm -f "$spec" "$findings" "$err_log"
+  # Must exit non-zero
+  if (( exit_code == 0 )); then
+    echo "  FAIL  route_findings: duplicate path should exit non-zero (got exit 0)"
+    fail_count=$((fail_count + 1))
+  else
+    echo "  PASS  route_findings: duplicate path exits non-zero (exit $exit_code)"
+    pass_count=$((pass_count + 1))
+  fi
+  # Stderr must mention the duplicated path
+  if [[ "$err" == *"src/shared.ts"* ]]; then
+    echo "  PASS  route_findings: duplicate stderr names the duplicated path"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  route_findings: duplicate stderr should name 'src/shared.ts' (got: $err)"
+    fail_count=$((fail_count + 1))
+  fi
+}
+
 # ---- run --------------------------------------------------------------------
 
 if [[ ! -f "$lib" ]]; then
@@ -140,6 +362,14 @@ test_strip_frontmatter_passthrough_no_frontmatter
 test_list_issue_files_excludes_sidecars
 test_list_issue_files_missing_dir_is_empty
 test_list_issue_files_sorted_numerically
+test_allowlist_for_happy_path
+test_allowlist_for_lane_not_found
+test_allowlist_for_missing_file
+test_allowlist_for_malformed_no_paths_block
+test_allowlist_for_no_cross_lane_bleed
+test_route_findings_happy_path
+test_route_findings_empty
+test_route_findings_fail_loud_on_duplicate
 
 echo ""
 echo "Results: $pass_count passed, $fail_count failed"
