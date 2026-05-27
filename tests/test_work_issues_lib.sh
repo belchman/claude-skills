@@ -350,6 +350,151 @@ EOF
   fi
 }
 
+# ---- bug fixes from Round 3a adversarial review ----------------------------
+
+# CRITICAL #1: bash 4+ guard — route_findings must refuse loudly on bash 3.x
+# rather than dying with "declare: -A: invalid option" + unset-var cascade.
+# We can't easily run a sub-bash 3 from here, so pin the GUARD's presence
+# by inspection: the function body must reference BASH_VERSINFO.
+test_route_findings_has_bash_version_guard() {
+  if grep -q 'BASH_VERSINFO' "$lib"; then
+    echo "  PASS  route_findings: bash version guard present in lib"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  route_findings: missing BASH_VERSINFO guard (will die ugly on bash 3.2)"
+    fail_count=$((fail_count + 1))
+  fi
+}
+
+# CRITICAL #2: last line of findings with no trailing newline must not drop.
+test_route_findings_handles_missing_trailing_newline() {
+  # shellcheck disable=SC1090
+  source "$lib"
+  local spec findings
+  spec=$(mktemp); findings=$(mktemp)
+  cat > "$spec" <<'EOF'
+### Backend
+```paths
+src/api.ts
+```
+EOF
+  # printf with no trailing \n — common from `claude -p` capture or `gh` JSON pipes
+  printf '1. src/api.ts:42 — last line no newline' > "$findings"
+  local got
+  got=$(route_findings "$findings" "$spec")
+  rm -f "$spec" "$findings"
+  local want=$'Backend\t1. src/api.ts:42 — last line no newline'
+  assert_eq "route_findings: last line without trailing \\n is still classified" "$want" "$got"
+}
+
+# CRITICAL #3: allowlist_for must reject globs (plan §C: "No globs in v1").
+test_allowlist_for_rejects_globs() {
+  # shellcheck disable=SC1090
+  source "$lib"
+  local spec err_log
+  spec=$(mktemp); err_log=$(mktemp)
+  cat > "$spec" <<'EOF'
+### Backend
+```paths
+src/api/**/*.ts
+src/svc.ts
+```
+EOF
+  local got err exit_code
+  got=$(allowlist_for "$spec" Backend 2>"$err_log"); exit_code=$?
+  err=$(cat "$err_log")
+  rm -f "$spec" "$err_log"
+  if (( exit_code == 0 )); then
+    echo "  FAIL  allowlist_for: glob should be rejected with non-zero exit (got 0)"
+    fail_count=$((fail_count + 1))
+  else
+    echo "  PASS  allowlist_for: rejects glob with non-zero exit (exit $exit_code)"
+    pass_count=$((pass_count + 1))
+  fi
+  if [[ "$err" == *"glob"* || "$err" == *"*"* ]]; then
+    echo "  PASS  allowlist_for: stderr mentions glob/wildcard"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  allowlist_for: stderr should mention glob/wildcard (got: $err)"
+    fail_count=$((fail_count + 1))
+  fi
+}
+
+# CRITICAL #4: whitespace-padded paths must not silently mis-route.
+# Resolution: allowlist_for trims, so the map key matches the trimmed lookup.
+test_allowlist_for_trims_whitespace() {
+  # shellcheck disable=SC1090
+  source "$lib"
+  local spec
+  spec=$(mktemp)
+  # Use printf to embed real leading/trailing spaces (won't survive heredoc easily)
+  {
+    echo '### Backend'
+    echo '```paths'
+    echo '  src/leading.ts'
+    echo 'src/trailing.ts  '
+    echo '```'
+  } > "$spec"
+  local got want
+  got=$(allowlist_for "$spec" Backend)
+  want=$'src/leading.ts\nsrc/trailing.ts'
+  rm -f "$spec"
+  assert_eq "allowlist_for: trims leading/trailing whitespace from paths" "$want" "$got"
+}
+
+# IMPORTANT (config #5 + coverage #3): regex must not classify adjacent
+# filename src/api.ts-bak as src/api.ts (extension-boundary bug).
+test_route_findings_does_not_match_adjacent_filename() {
+  # shellcheck disable=SC1090
+  source "$lib"
+  local spec findings
+  spec=$(mktemp); findings=$(mktemp)
+  cat > "$spec" <<'EOF'
+### Backend
+```paths
+src/api.ts
+```
+EOF
+  cat > "$findings" <<'EOF'
+1. src/api.ts-bak:5 — different file (backup variant)
+EOF
+  local got
+  got=$(route_findings "$findings" "$spec")
+  rm -f "$spec" "$findings"
+  # The finding is about a different file (src/api.ts-bak), should be unmapped, NOT Backend
+  local want=$'<unmapped>\t1. src/api.ts-bak:5 — different file (backup variant)'
+  assert_eq "route_findings: src/api.ts-bak NOT misclassified as src/api.ts" "$want" "$got"
+}
+
+# IMPORTANT (config #5 propagation): route_findings must propagate allowlist_for's
+# non-zero exit (e.g. when allowlist contains globs and gets rejected).
+test_route_findings_propagates_allowlist_for_failure() {
+  # shellcheck disable=SC1090
+  source "$lib"
+  local spec findings err_log
+  spec=$(mktemp); findings=$(mktemp); err_log=$(mktemp)
+  cat > "$spec" <<'EOF'
+### Backend
+```paths
+src/**/*.ts
+```
+EOF
+  cat > "$findings" <<'EOF'
+1. src/foo.ts:1 — bug
+EOF
+  local exit_code err
+  route_findings "$findings" "$spec" >/dev/null 2>"$err_log"; exit_code=$?
+  err=$(cat "$err_log")
+  rm -f "$spec" "$findings" "$err_log"
+  if (( exit_code == 0 )); then
+    echo "  FAIL  route_findings: should propagate non-zero from allowlist_for on glob spec"
+    fail_count=$((fail_count + 1))
+  else
+    echo "  PASS  route_findings: propagates non-zero exit from allowlist_for (exit $exit_code)"
+    pass_count=$((pass_count + 1))
+  fi
+}
+
 # ---- run --------------------------------------------------------------------
 
 if [[ ! -f "$lib" ]]; then
@@ -370,6 +515,12 @@ test_allowlist_for_no_cross_lane_bleed
 test_route_findings_happy_path
 test_route_findings_empty
 test_route_findings_fail_loud_on_duplicate
+test_route_findings_has_bash_version_guard
+test_route_findings_handles_missing_trailing_newline
+test_allowlist_for_rejects_globs
+test_allowlist_for_trims_whitespace
+test_route_findings_does_not_match_adjacent_filename
+test_route_findings_propagates_allowlist_for_failure
 
 echo ""
 echo "Results: $pass_count passed, $fail_count failed"
