@@ -34,11 +34,13 @@ protocol survived into the skill file, not into the plan.
   least one trigger phrase (e.g. `write a spec`, `/write-a-spec`, or
   `technical spec`). _Check: the description string contains the substring
   `spec` AND one of `story`, `issue`, `brief`, or `research`._
-- **FM-5**: Frontmatter declares a tool allowlist restricted to read-only
-  tools. The `allowed-tools` (or equivalent) value lists **only** `Read`,
-  `Grep`, `Glob` — no `Edit`, `Write`, `Bash`, or `MultiEdit`. _Check: parse
-  the frontmatter and assert the tools field is a subset of
-  `{Read, Grep, Glob}`._
+- **FM-5**: Frontmatter declares a tool allowlist (or omits the field
+  entirely, matching `write-a-rubric`'s pattern). If declared, the
+  allowlist is a subset of `{Read, Grep, Glob, Write}` — `Write` is
+  permitted ONLY for the sidecar output; the skill body must explicitly
+  forbid edits outside the output `*.spec.md` path. No `Edit`, `Bash`,
+  or `MultiEdit`. _Check: parse the frontmatter; if `allowed-tools` is
+  present, assert tools field is a subset of `{Read, Grep, Glob, Write}`._
 
 ## Spec Template Sections (TS)
 
@@ -92,6 +94,48 @@ These criteria verify the `paths` fenced-block protocol is documented inside
   its own `paths` block containing at least one path. _Check: count of
   `^```paths$` lines inside the worked example is ≥ 2, and the preceding
   H3 headings differ._
+
+## Lane Discovery & Single-Lane Handling (LD) — added Round 2
+
+- **LD-1**: `SKILL.md` instructs the writer to read `CLAUDE.md`'s
+  `## Lane boundaries` section to learn project-specific lane labels.
+  _Check: `grep -E 'CLAUDE.md|Lane boundaries' SKILL.md` returns ≥1 line
+  citing the lookup, AND a sentence near that grep result names
+  `Lane boundaries` as the source._
+- **LD-2**: `SKILL.md` states lane H3 headings in the spec MUST match
+  labels defined in `CLAUDE.md`'s `## Lane boundaries`. _Check:
+  `SKILL.md` contains the word `match` (or `align`/`correspond`) in a
+  sentence that also names the lane heading._
+- **LD-3**: `SKILL.md` states that for a single-lane feature, the spec
+  OMITS the unused lane's H3 entirely — does NOT emit an empty `paths`
+  block. _Check: `SKILL.md` contains a sentence to the effect of "omit
+  unused lanes" / "don't emit empty paths blocks" / "skip lanes with no
+  paths"._
+
+## Tests Required — Behavior List (TB) — added Round 2
+
+- **TB-1**: `SKILL.md` documents that the `Tests required` section is a
+  **behavior list** (one bullet per testable behavior), NOT test file
+  paths and NOT coverage percentages. _Check: `SKILL.md` contains the
+  phrase `behavior list` (or `one bullet per behavior` /
+  `one behavior per bullet`) within the `Tests required` documentation._
+- **TB-2**: `SKILL.md` shows at least one worked example of a behavior
+  bullet (e.g. "over-limit-minute returns 429 + Retry-After"). _Check:
+  `SKILL.md` contains a markdown bullet inside or near its
+  `Tests required` documentation that names an observable behavior
+  (verb + observable)._
+
+## Missing-Research Handling (MR) — added Round 2
+
+- **MR-1**: `SKILL.md` states that if `issues/research/NNN-*.md` is
+  missing, the skill proceeds AND adds a Risks bullet about the
+  missing research pass. _Check: `SKILL.md` contains a sentence to the
+  effect of "if research is missing" or "no research dump" and pairs
+  it with a directive to add a Risks bullet._
+- **MR-2**: `SKILL.md` does NOT require the research dump as a
+  precondition (the skill works for direct user invocation, not only
+  inside `/feature`). _Check: `SKILL.md` does NOT contain a sentence
+  like "refuse if research is missing" or "abort without research"._
 
 ## Output Path Convention (OP)
 
@@ -170,9 +214,12 @@ These criteria verify the `paths` fenced-block protocol is documented inside
 - **C-1**: The skill MUST NOT include `disable-model-invocation: true`
   (it is invoked by `/feature` and by direct user request). _Check:
   `grep 'disable-model-invocation' SKILL.md` returns zero lines._
-- **C-2**: The skill MUST NOT declare write-capable tools (`Edit`,
-  `Write`, `MultiEdit`, `Bash`) in its allowlist. _Check: covered by
-  FM-5; restated here as a hard constraint._
+- **C-2**: The skill MUST NOT declare `Edit`, `MultiEdit`, or `Bash`
+  in its allowlist. `Write` is permitted but ONLY for the spec sidecar
+  output; the skill body must forbid writes elsewhere in the project.
+  _Check: parse `allowed-tools` (if present); assert no `Edit`,
+  `MultiEdit`, or `Bash`. AND grep `SKILL.md` for the forbids-other-writes
+  language._
 - **C-3**: The skill MUST NOT contain instructions to call the Anthropic
   Managed Agents API or the Files API (out of scope per PRD). _Check:
   `grep -Ei 'managed.agents|files api|user\.define_outcome' SKILL.md`

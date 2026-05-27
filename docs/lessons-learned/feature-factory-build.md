@@ -84,3 +84,54 @@ Nothing blocks Round 2. Captured deferred items above are Round 6 candidates.
 Smooth. The dogfooding loop produced 13 working artifacts in one Round, and the existing skills handled meta-work (building skills with skills) competently. Issue 001's rubric size is the only flag worth watching during Round 3 implementation.
 
 Ready to proceed to Round 2: `grill-with-docs` on the design of `write-a-spec` (issue 001 + rubric + plan §C). Goal: surface ambiguities the rubric doesn't catch before any builder picks the issue up.
+
+---
+
+## Round 2 — stress-test the design
+
+**Date:** 2026-05-27
+
+**Skill dogfooded:** `grill-with-docs` (one session, 5 questions).
+
+**Final state:** issue 001 and its rubric updated with 5 resolved decisions. New `CONTEXT.md` at repo root (project glossary). New `docs/adr/0001-fenced-paths-blocks-for-lane-allowlists.md`. No commit yet — pending Round 3.
+
+### What worked
+
+- **grill-with-docs found a real rubric bug.** The rubric's FM-5 said write-a-spec's tool allowlist must be `Read, Grep, Glob` only — no `Write`. But the skill HAS to write its `*.spec.md` output. The 6 parallel rubric subagents in Round 1 all faithfully implemented the issue's "no Edit/Write to project files; only writes its own output" — but the rubric dropped the carve-out and made it absolute. A builder following the rubric would have produced a skill that can't write its output and fail at runtime. **This is exactly what grilling-before-building is for.** Caught in 5 questions; ~10 minutes of skill time.
+- **Lazy CONTEXT.md / ADR creation per the skill's discipline worked cleanly.** I created `CONTEXT.md` when the first load-bearing term (`lane`) was about to be referenced multiple ways. Created the ADR when the fenced-`paths`-block decision hit all three threshold tests (hard to reverse, surprising without context, real trade-off).
+- **One-question-at-a-time discipline kept the user from being overwhelmed.** 5 questions, 5 answers, ~5 minutes. All five had a recommended option the user accepted. The skill's "give your recommended answer" rule lets the user pattern-match fast.
+- **Questions surfaced 4 real design ambiguities** beyond the tool-allowlist bug: single-lane handling (omit empty lane), lane source (read CLAUDE.md), tests-required content shape (behavior list), missing-research handling (proceed + Risks bullet). All four are now pinned in the issue + rubric.
+
+### What didn't work / friction encountered
+
+- **The grill skill doesn't enforce its "give your recommended answer" rule strictly.** A naive grill could ask questions without recommendations, dumping the design burden on the user. The skill's prompt language is "give your recommended answer" — easy to skip. Worth pinning more aggressively in the skill body (Round 6 candidate).
+- **No tooling to check the existing rubric against the resolved design after grilling.** I had to manually update FM-5 and add LD-1..3, TB-1..2, MR-1..2 criteria. A future workflow could do: `grill-with-docs --apply-to <rubric-path>` to suggest rubric edits. Defer.
+- **The grilling session output didn't auto-commit CONTEXT.md / ADRs.** The skill creates them, but they sit untracked. Worth a closing-summary suggestion. Minor.
+
+### Skill / process changes worth landing
+
+1. **Critical fix landed THIS round:** rubric 001's FM-5 corrected to permit `Write` for the sidecar output only. Without this, Round 3 would have produced a broken skill.
+2. **Issue 001 expanded** with 5 new acceptance criteria from grilling (Lane discovery, single-lane handling, Tests required = behavior list, missing-research handling, the FM-5 carve-out language).
+3. **Rubric 001 expanded** with 7 new criteria (LD-1..3, TB-1..2, MR-1..2) and C-2 relaxed to match FM-5.
+4. **Round 6 candidates** (lessons for future skill edits):
+   - `grill-with-docs/SKILL.md` — strengthen the "give your recommended answer" rule.
+   - `grill-with-docs/SKILL.md` — closing summary should suggest committing `CONTEXT.md` / ADRs.
+
+### Pre-Round-3 status check (per user rule "fix what's broken before next round")
+
+Round 2 fixes:
+- ✅ rubric 001 FM-5 (tool allowlist now permits Write — applied)
+- ✅ rubric 001 C-2 (relaxed to match FM-5 — applied)
+- ✅ issue 001 acceptance criteria expanded with Q1-Q5 outcomes (applied)
+- ✅ CONTEXT.md created (applied)
+- ✅ ADR 0001 created (applied)
+
+Round 3 will need `/work-issues` to autonomously work each issue. Per Round 0 precedent, slash-only skills with `disable-model-invocation: true` cannot be invoked by other orchestrator skills or by the Skill tool. Round 3 plans to invoke `/work-issues` via Skill tool dispatch from inside this conversation — **this will fail** the same way `/adversarial-review` did in Round 0.
+
+**Pre-Round-3 fix required:** remove `disable-model-invocation: true` from `/work-issues/SKILL.md`. The skill description already gates with explicit-trigger language ("Heavyweight (commits code, modifies the issue queue); explicit invocation only.") so auto-fire risk stays low, matching the precedent we set for adversarial-review.
+
+### Round 2 verdict
+
+Grilling found one critical rubric bug + 4 design ambiguities in 5 questions. Without this round, Round 3 would have produced a broken `write-a-spec` skill. The lazy-CONTEXT.md and lazy-ADR pattern proved its value — both files now exist as durable references for future rounds.
+
+Ready to proceed to Round 3 (build each piece via `/work-issues`) — AFTER applying the pre-Round-3 fix above.

@@ -1,7 +1,6 @@
 ---
 name: work-issues
-description: 'Autonomously work one task from an issues/ queue end-to-end — explore, implement (TDD when applicable), run feedback loops, commit, update the issue file. Step 3 of the build pipeline (write-a-prd → prd-to-issues → work-issues). Heavyweight (commits code, modifies the issue queue); explicit invocation only. Headless loop runner: bin/loop.sh. Triggers: /work-issues, "work the issue queue", "run an AFK iteration", "do one issue end-to-end".'
-disable-model-invocation: true
+description: 'Autonomously work one task from an issues/ queue end-to-end — explore, implement (TDD when applicable), run feedback loops, commit, update the issue file. Step 3 of the build pipeline (write-a-prd → prd-to-issues → work-issues). Heavyweight (commits code, modifies the issue queue). Use only when explicitly asked: /work-issues, "work the issue queue", "run an AFK iteration", "do one issue end-to-end", OR when another orchestrator skill (e.g. /feature) needs to dispatch an AFK iteration programmatically. Headless loop runner: bin/loop.sh.'
 ---
 
 # work-issues — one autonomous iteration
