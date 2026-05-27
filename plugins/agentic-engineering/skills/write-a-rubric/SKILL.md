@@ -5,7 +5,7 @@ description: 'Produce a gradeable rubric file from an issue, PRD, or free-form g
 
 # write-a-rubric
 
-A rubric is a markdown document of **independently gradeable criteria**: assertions a separate context — given only the produced artifact, no conversation, no source code — can verify pass/fail. Vague criteria produce noisy evaluations; this skill exists to keep them sharp.
+A rubric is a markdown document of **independently gradeable criteria**: assertions a separate context — given only the produced artifact plus the ability to run automated checks (tests, linters, byte comparisons, exit-code inspection) against it, but with **no access to the conversation, the source-of-truth context, or design rationale** — can verify pass/fail. Vague criteria produce noisy evaluations; this skill exists to keep them sharp.
 
 Source discipline: [Anthropic Managed Agents — Define outcomes](https://platform.claude.com/docs/en/managed-agents/define-outcomes).
 
@@ -35,9 +35,9 @@ Create `rubrics/` lazily if needed.
 
 ## What makes a criterion "gradeable"
 
-Picture a separate context that sees **only the produced artifact** — no conversation, no source code, no context about what was asked. Could that context decide pass/fail? If yes, the criterion is gradeable. If not, sharpen or split.
+Picture a separate context that sees **the produced artifact and can run automated checks against it** (execute the test suite, diff outputs against fixtures, grep for required strings, check exit codes). What that context does NOT have: the conversation history, the design rationale, the source-of-truth doc, anyone to ask clarifying questions of. Could that context decide pass/fail given only the artifact and its automation? If yes, the criterion is gradeable. If no, sharpen or split.
 
-The single most powerful sharpening move is naming the **observation** the grader makes — the command they run, the file they open, the byte they compare, the count they read. Not every criterion needs an explicit command, but every criterion needs an observable. When the observable isn't obvious, write it down.
+The single most powerful sharpening move is naming the **observation** the grader makes — the command they run, the file they open, the byte they compare, the count they read, the test they execute. Not every criterion needs an explicit command, but every criterion needs an observable. When the observable isn't obvious, write it down.
 
 **Vague → sharp:**
 
@@ -49,7 +49,7 @@ The single most powerful sharpening move is naming the **observation** the grade
 | Has tests | Unit tests for these five named cases exist as distinct test functions: under-limit, at-limit, over-limit-minute, over-limit-day, enterprise-bypass |
 | Well-documented | A file at `docs/exporter.md` exists and contains sections titled "Resume state", "S3 key contract", and "How to abort a run" |
 
-Each sharpened version names what the grader can see in the artifact alone.
+Each sharpened version names what the grader can observe — by inspecting the artifact OR by running automated checks against it.
 
 ## Process
 
@@ -57,7 +57,7 @@ Each sharpened version names what the grader can see in the artifact alone.
 2. **Identify the deliverable.** What artifact is produced, where it lives, in what format. If unclear, ask once.
 3. **Seed from acceptance criteria** if the source is an issue with `## Acceptance criteria`. Treat them as starting points to *sharpen*, not as the rubric itself.
 4. **Draft criteria.** Group by category. Common categories: Deliverable, Inputs/Data, Behavior, Output Quality, Constraints. Each criterion is one independent observable assertion. For non-obvious criteria, attach a short verification hint — the command, file, or comparison the grader uses.
-5. **Self-critique pass.** For each criterion ask: *"Could a grader with ONLY the produced artifact — no conversation, no source code, no extra context — verify this?"* If no, sharpen or split using the table above.
+5. **Self-critique pass.** For each criterion ask: *"Could a grader with the produced artifact + automated checks (tests, linters, exit codes) — but no conversation, no source-of-truth, no one to ask — verify this?"* If no, sharpen or split using the table above.
 6. **Stop check.** Continue until **≥4 gradeable criteria across ≥2 categories** AND the deliverable is unambiguous, OR the user explicitly says "ship it." Then stop. Leanness matters: every criterion must earn its place. A focused 10-criterion rubric grades more reliably than a 25-criterion one — duplicates and unscorable items become noise the grader has to filter through. If you find yourself past ~20 criteria for a single issue, look for items to cut or merge before items to add.
 7. **Write the file** at the path above.
 8. **Print the closing one-liner**:

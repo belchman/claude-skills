@@ -146,6 +146,7 @@ The `File-by-file change list` section's lane subsections must follow this forma
   - **No trailing `###`** (CommonMark ATX-close): `### Backend ###` puts ` ###` inside the lane name. Use `### Backend` only.
   - **No leading indentation**: `   ### Backend` is not recognised as an H3 by the parser.
   - **No parenthetical annotations**: `### Backend (cron)` becomes lane name `Backend (cron)` — fails the lookup.
+  - **Case-sensitive — copy from `CLAUDE.md` verbatim.** The parser does exact-string match against the lowercased lane name `feature.sh` passes in (per the recent `lane_normalize` fix). If `## Lane boundaries` declares `backend` (lowercase) and you write `### Backend` (capitalized), the parser sees no match — lane is skipped silently with status `empty`. Use the same case as the bareword in `## Lane boundaries`, character-for-character. When in doubt, copy-paste from the source.
   - Trailing whitespace IS tolerated (parser trims) — but leading whitespace anywhere in the heading is not.
 - **Paths blocks** are fenced code blocks whose info string is literally `paths` (lowercase, no attributes). Variants the parser silently rejects: `\`\`\`paths bash`, `\`\`\`Paths`, `\`\`\`paths-list`, `~~~paths` (tilde fence), indented fences.
 - **Each line inside a `paths` block is one literal file path** — no globs (`*`, `**`, `?`, `[`), no brace expansion (`{a,b}`), no shell metacharacters. The parser rejects all of these with exit 1 and stderr names the offender.
@@ -155,10 +156,12 @@ The `File-by-file change list` section's lane subsections must follow this forma
 
 ### Worked example
 
+Assumes the project's `CLAUDE.md ## Lane boundaries` declares `backend` and `frontend` (lowercase). If your repo declares them as `Backend`/`Frontend` (or `api`/`web`, or any other case/name), substitute accordingly — the H3 must match `CLAUDE.md` character-for-character, including case.
+
 ````markdown
 ## File-by-file change list
 
-### Backend
+### backend
 
 ```paths
 src/api/handlers/invoices.ts
@@ -167,7 +170,7 @@ src/jobs/reminder-job.ts
 tests/services/invoice-reminder.test.ts
 ```
 
-### Frontend
+### frontend
 
 ```paths
 web/components/billing/ReminderCard.tsx
@@ -180,8 +183,9 @@ What this does right:
 
 - Two distinct H3 lanes, each with its own `paths` block.
 - Every line is a literal path (no `src/api/**/*.ts`).
-- Test paths live in the lane that owns them — backend tests under Backend, frontend tests under Frontend.
+- Test paths live in the lane that owns them — backend tests under `### backend`, frontend tests under `### frontend`.
 - No path appears in both lanes.
+- H3 labels match `CLAUDE.md ## Lane boundaries` character-for-character (here: lowercase).
 
 ## Anti-patterns
 

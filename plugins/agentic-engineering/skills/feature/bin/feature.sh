@@ -420,8 +420,12 @@ step_lane() {
   lane_lc=$(lane_normalize "$lane")
   local spec_path
   spec_path=$(state_field "$run_dir/state.json" spec_path)
+  # The spec H3 is the canonical lane label per CLAUDE.md ## Lane boundaries,
+  # which declares lowercase labels (backend/frontend). Pass the normalized
+  # form to allowlist_for so the exact-match parser succeeds regardless of
+  # what case the caller used to invoke step_lane.
   local allowlist
-  allowlist=$(allowlist_for "$spec_path" "$lane")
+  allowlist=$(allowlist_for "$spec_path" "$lane_lc")
   if [[ -z "$allowlist" ]]; then
     echo "step_lane($lane): no allowlist found in spec; marking lane empty" >&2
     # Record the empty lane in state so route_findings and CP3 can see it.

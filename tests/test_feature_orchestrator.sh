@@ -60,14 +60,25 @@ if [[ -n "$target" ]]; then
   # Different placeholder content depending on what's being written
   case "$target" in
     *.spec.md)
+      # H3 labels must match CLAUDE.md `## Lane boundaries` char-for-char.
+      # claude-skills declares lowercase backend/frontend, so the spec fixture
+      # uses lowercase too. Without both H3 blocks the two-lane chain stalls
+      # at frontend with an empty allowlist (lane status: empty).
       cat > "$target" <<'SPEC'
 # Stub spec
 
-### Backend
+### backend
 
 ```paths
 src/api/foo.ts
 src/services/foo.ts
+```
+
+### frontend
+
+```paths
+src/components/Foo.tsx
+src/components/Foo.test.tsx
 ```
 SPEC
       ;;
@@ -471,6 +482,22 @@ test_full_chain_end_to_end() {
     pass_count=$((pass_count + 1))
   else
     echo "  FAIL  full-chain: state.lanes expected backend,frontend; got '$lane_keys'"
+    fail_count=$((fail_count + 1))
+  fi
+
+  # Regression guard for the case-sensitivity bug: step_lane was passing the
+  # capitalized lane name ("Backend") to allowlist_for, while the spec H3 +
+  # CLAUDE.md `## Lane boundaries` use lowercase. allowlist_for did exact
+  # match, so the allowlist came back empty and the lane was silently marked
+  # "empty". Now step_lane passes lane_lc, the fixture spec uses lowercase
+  # H3s, and lanes carry their real path lists.
+  local backend_count
+  backend_count=$(jq -r '.lanes.backend.allowlist | length' "$sb/runs/$id.done/state.json" 2>/dev/null)
+  if [[ "$backend_count" -ge 1 ]]; then
+    echo "  PASS  full-chain: backend lane allowlist populated ($backend_count entries), not silently empty"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  full-chain: backend lane allowlist was empty — case-sensitivity regression"
     fail_count=$((fail_count + 1))
   fi
 

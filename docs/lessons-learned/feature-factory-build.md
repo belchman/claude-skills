@@ -312,6 +312,31 @@ Ready to proceed to Round 6 (lessons → skill edits).
 
 This is the highest-value lesson of the entire dogfooding pass. Every issue (001-005) had a careful, sharp rubric. Every issue passed its rubric. Every issue still had critical bugs caught by adversarial review *after* the rubric passed. The bugs were structural (state-machine completeness, atomicity, exit-code propagation) — the kind a static artifact inspection cannot see by design. The skill edits in this round (tdd, write-a-rubric, adversarial-review) now name this pattern explicitly so future build rounds in any project benefit from it without re-discovery.
 
+### Post-Round-6 — skill-creator eval pass
+
+After Round 6 landed, ran skill-creator-style evals on the two highest-risk skills (`write-a-spec` — never formally evaluated; `write-a-rubric` — got a substantive Round-6 addition). 8 subagents in parallel: 2 skills × 2 prompts × 2 configs (with-skill vs baseline).
+
+**Findings that mattered:**
+
+1. **Real bug surfaced — silent case-sensitivity failure.** Both write-a-spec evals flagged that the skill's worked example used capitalized `### Backend` / `### Frontend`, but this repo's `CLAUDE.md ## Lane boundaries` declares lowercase `backend` / `frontend`. The `allowlist_for` parser does exact match. A spec author following the skill's example would have written `### Backend` and the orchestrator would have silently marked the lane "empty" — no error, no warning, just no work done. Found by tracing what `feature.sh:424` actually passes to `allowlist_for`:
+   - It passes `$lane` (the dispatcher's capitalized `"Backend"`), not `$lane_lc`.
+   - The existing tests passed only because step_lane's empty-allowlist branch still returns 0, masking the failure.
+   - **FIXED:** `feature.sh:step_lane` now passes `lane_lc` to `allowlist_for`. Test fixture updated to use lowercase `### backend` / `### frontend`. Added a regression guard test (`backend lane allowlist populated`) that fails LOUDLY if anyone reverts the fix. write-a-spec/SKILL.md got an explicit case-sensitivity bullet under the lane-label rules; worked example switched to lowercase with a header explaining how to substitute for projects using different cases.
+   - This is the kind of bug rubrics cannot catch by design (it's a contract-level silent failure between an external file's case and an internal parser's match), exactly the pattern Round 6's `write-a-rubric` "Rubric < contract" addition predicts.
+
+2. **Internal contradiction in write-a-rubric — fixed.** The skill body said "grader sees only the produced artifact — no source code" but the worked example uses `tests/resume/test_kill_resume.py passes` as a check (requires running the test). One eval subagent flagged the tension directly. **FIXED:** clarified the grader's scope — has access to the artifact PLUS automated checks (tests, linters, exit codes, byte comparisons), but NOT the conversation or source-of-truth. This matches the worked example's intent and resolves the strict-reading paradox.
+
+**Findings that did NOT mature into fixes:**
+
+- write-a-rubric eval surfaced an ambiguity around ID conventions for unnumbered Output Quality / Constraints items. Low-impact (agents handled it sensibly without guidance). Skipped.
+- write-a-spec eval flagged that `tests/test_crap.py` doesn't match the `tests/test_*.sh` pattern in CLAUDE.md's Lane boundaries. But that's by design — the patterns are illustrative, not exhaustive. Both with-skill agents made the sensible call to file the Python test under backend lane anyway. Skipped.
+
+**Baseline comparison:**
+
+- write-a-rubric: with-skill produced 11 criteria; baseline produced 21. Baseline was thorough but bloated (anti-pattern the skill names explicitly). With-skill aligned with the skill's "≤20 ceiling" rule.
+- write-a-spec single-lane: with-skill correctly omitted the empty `### Frontend` H3 and matched the canonical case. Baseline invented its own lane labels (`### crap`, `### tests`) — the exact failure mode the skill prevents.
+- write-a-spec multi-lane: both versions produced valid specs, but with-skill caught the case-sensitivity rule and used `### backend` (matching CLAUDE.md). Baseline only got it right because the task explicitly named the labels.
+
 ### Round 6 verdict — and dogfooding pass close-out
 
 Five skill edits, four deferred-with-reason items, one named pattern. The dogfooding plan in `docs/plans/feature-factory.md` is complete:
