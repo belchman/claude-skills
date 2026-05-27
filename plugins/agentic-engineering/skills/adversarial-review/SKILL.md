@@ -1,6 +1,6 @@
 ---
 name: adversarial-review
-description: 'Three parallel reviewer agents find contradictions, config gaps, and coverage holes across a project''s docs, config, and tests — then fix what you approve. Heavyweight (dispatches parallel agents, can modify files). Use only when explicitly asked: /adversarial-review, "adversarial review", "find gaps in my docs/config", OR when another skill (e.g. /feature) needs to dispatch a validator pass programmatically.'
+description: 'Three parallel reviewer agents find contradictions, config gaps, and coverage holes across a project''s docs, config, and tests — then fix what you approve. Heavyweight (dispatches parallel agents, can modify files). Supports env-var automation hooks (ADVERSARIAL_REVIEW_TARGETS, ADVERSARIAL_REVIEW_REPORT_ONLY) so an orchestrator can dispatch a programmatic validator pass without keyboard. Use only when explicitly asked: /adversarial-review, "adversarial review", "find gaps in my docs/config", OR when another skill (e.g. /feature) needs to dispatch a validator pass programmatically.'
 allowed-tools: Glob Grep Read Bash Write Edit Agent AskUserQuestion
 ---
 
@@ -72,6 +72,14 @@ Print 3-5 bullets before proceeding:
 - **Spec domain**: specs, plans, PRDs, architecture docs, type definitions
 - **Config domain**: settings files, hook scripts, CI config, permissions, env vars
 - **Coverage domain**: test behaviors/requirements, coverage thresholds, test framework config, feature files
+
+### Automation: `ADVERSARIAL_REVIEW_TARGETS` env-var
+
+When dispatched by another orchestrator skill (e.g. `/feature`), the interactive auto-discovery + summary above isn't useful — the caller already knows which files to review. If the env var `ADVERSARIAL_REVIEW_TARGETS` is set to a colon-separated list of globs (PATH-style separator), use that list as the file set for Phase 2 and **skip Steps 3 and 5 entirely** (auto-discovery and user summary). Steps 1, 2, 4, 6 still run so ARCHITECTURE.md context, review-config, diff scoping, and domain classification still apply.
+
+Example value: `ADVERSARIAL_REVIEW_TARGETS="src/api/**/*.ts:src/services/**/*.ts:tests/api/**/*.ts"`. Split on `:`, expand each glob (`shopt -s globstar` or equivalent), dedupe, then proceed to domain classification at Step 6.
+
+**If unset (default):** auto-discover as documented in Step 3 and summarize at Step 5 — interactive UX is unchanged.
 
 ---
 
@@ -203,6 +211,8 @@ After showing the merged findings, ask the user:
 > - **D)** Skip fixes — I just wanted the review
 
 **Wait for the user to respond before proceeding.** If they choose D, stop here.
+
+**Automation: `ADVERSARIAL_REVIEW_REPORT_ONLY` env-var.** If `ADVERSARIAL_REVIEW_REPORT_ONLY=1` is set (e.g. by `/feature`'s orchestrator dispatching a validator pass), **skip the user prompt** above and behave as if the user chose option **D** — print the merged findings report, then stop without entering Phase 4. The findings are still useful for the caller to parse and route. **If unset (default):** ask the user A/B/C/D interactively as documented above — interactive UX is unchanged.
 
 ---
 
