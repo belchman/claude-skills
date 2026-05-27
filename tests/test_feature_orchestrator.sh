@@ -125,7 +125,9 @@ test_start_creates_run_artifacts() {
   assert_eq "start: exit 0" "0" "$rc"
   assert_true "start: run dir created" test -d "$run_dir"
   assert_true "start: brief.md created" test -f "$run_dir/brief.md"
-  assert_true "start: LOCK created" test -f "$run_dir/LOCK"
+  # LOCK is released when cmd_start exits cleanly (user is now at a checkpoint
+  # waiting for input; nothing is actively working).
+  assert_true "start: LOCK released after completion" test ! -f "$run_dir/LOCK"
   assert_true "start: state.json created" test -f "$run_dir/state.json"
   if [[ "$out" == *"feature.sh continue $id"* ]]; then
     echo "  PASS  start: stdout names 'feature.sh continue <id>'"
@@ -260,6 +262,124 @@ test_stale_lock_allows_new_start() {
   rm -rf "$sb"
 }
 
+# ---- continue --redo arg validation (config C1: no infinite loop) ---------
+
+test_continue_redo_without_feedback_errors() {
+  local sb; sb=$(mk_sandbox)
+  run_in_sb "$sb" start "test brief" > /dev/null 2>&1
+  local id
+  id=$(basename "$(find "$sb/runs" -maxdepth 1 -mindepth 1 -type d | head -1)")
+  # Invoke --redo with no feedback arg — should error fast, not loop.
+  # macOS doesn't have GNU timeout; use a background-process + sleep + kill pattern.
+  local rc
+  (
+    STUB_OUT_DIR="$sb/stub-out" CLAUDE_CMD="$sb/claude-stub" \
+    LOOP_SH_CMD="$sb/loop-sh-stub" FEATURE_RUNS_DIR="$sb/runs" \
+      bash "$feature_sh" continue "$id" --redo > /dev/null 2>&1 &
+    local pid=$!
+    # Give it 3 seconds; if still running, it's the infinite loop bug.
+    for _ in 1 2 3 4 5 6; do
+      sleep 0.5
+      if ! kill -0 "$pid" 2>/dev/null; then
+        wait "$pid"
+        exit $?
+      fi
+    done
+    kill -9 "$pid" 2>/dev/null
+    exit 124
+  )
+  rc=$?
+  rm -rf "$sb"
+  case $rc in
+    124) echo "  FAIL  continue --redo without feedback hung 3s+ (infinite loop bug)"; fail_count=$((fail_count + 1)) ;;
+    0)   echo "  FAIL  continue --redo without feedback should exit non-zero (got 0)"; fail_count=$((fail_count + 1)) ;;
+    *)   echo "  PASS  continue --redo without feedback errors quickly (rc=$rc)"; pass_count=$((pass_count + 1)) ;;
+  esac
+}
+
+# ---- continue --redo feedback actually lands in step prompt --------------
+
+test_continue_redo_feedback_in_prompt() {
+  local sb; sb=$(mk_sandbox)
+  run_in_sb "$sb" start "test brief redo" > /dev/null 2>&1
+  local id
+  id=$(basename "$(find "$sb/runs" -maxdepth 1 -mindepth 1 -type d | head -1)")
+  # Force state to story_drafted (where the start chain leaves it after the smoke).
+  # Then --redo should re-run step_story with the feedback prepended.
+  rm -f "$sb/stub-out"/prompt-*.log  # clear prior captures from start
+  run_in_sb "$sb" continue "$id" --redo "make the version output JSON" > /dev/null 2>&1
+  # Find the most recent prompt log AND check before cleanup (cov reviewer I5).
+  local prompt_log found=0
+  prompt_log=$(ls -t "$sb/stub-out"/prompt-*.log 2>/dev/null | head -1)
+  if [[ -n "$prompt_log" ]] && grep -qF "make the version output JSON" "$prompt_log"; then
+    found=1
+  fi
+  rm -rf "$sb"
+  if (( found == 1 )); then
+    echo "  PASS  continue --redo prepends feedback into the dispatched prompt"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  continue --redo feedback NOT found in step prompt"
+    fail_count=$((fail_count + 1))
+  fi
+}
+
+# ---- continue --accept advances story_drafted → spec_drafted -------------
+
+test_continue_accept_story_to_spec() {
+  local sb; sb=$(mk_sandbox)
+  run_in_sb "$sb" start "feature one" > /dev/null 2>&1
+  local id
+  id=$(basename "$(find "$sb/runs" -maxdepth 1 -mindepth 1 -type d | head -1)")
+  # After start, state is story_drafted. Continue --accept runs spec + rubric.
+  run_in_sb "$sb" continue "$id" --accept > /dev/null 2>&1
+  local step
+  step=$(jq -r .last_completed_step "$sb/runs/$id/state.json" 2>/dev/null)
+  rm -rf "$sb"
+  # The stub creates a valid spec with paths blocks, so we should advance to
+  # rubric_drafted (spec succeeded → rubric ran).
+  if [[ "$step" == "rubric_drafted" ]]; then
+    echo "  PASS  continue --accept from story_drafted reaches rubric_drafted"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  continue --accept expected rubric_drafted, got '$step'"
+    fail_count=$((fail_count + 1))
+  fi
+}
+
+# ---- lane step emits lowercase marker (spec C1/C2 + cov C2 regression) ---
+
+test_lane_step_emits_lowercase_marker() {
+  local sb; sb=$(mk_sandbox)
+  run_in_sb "$sb" start "feature lane" > /dev/null 2>&1
+  local id
+  id=$(basename "$(find "$sb/runs" -maxdepth 1 -mindepth 1 -type d | head -1)")
+  # Drive: story → spec/rubric → backend lane
+  run_in_sb "$sb" continue "$id" --accept > /dev/null 2>&1  # spec + rubric
+  run_in_sb "$sb" continue "$id" --accept > /dev/null 2>&1  # backend lane + validator
+  local step
+  step=$(jq -r .last_completed_step "$sb/runs/$id/state.json" 2>/dev/null)
+  # state.lanes.backend (lowercase) should exist
+  local lanes_key
+  lanes_key=$(jq -r '.lanes | keys[]' "$sb/runs/$id/state.json" 2>/dev/null | head -1)
+  rm -rf "$sb"
+  # Expect step to be backend_validated (or downstream if route_and_loopback ran clean)
+  if [[ "$step" == "backend_validated" || "$step" == "backend_complete" ]]; then
+    echo "  PASS  backend lane step emits lowercase marker: $step"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  backend lane step expected lowercase backend_complete/backend_validated, got '$step'"
+    fail_count=$((fail_count + 1))
+  fi
+  if [[ "$lanes_key" == "backend" ]]; then
+    echo "  PASS  state.lanes uses lowercase key (backend)"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  state.lanes key expected lowercase 'backend', got '$lanes_key'"
+    fail_count=$((fail_count + 1))
+  fi
+}
+
 # ---- run -----------------------------------------------------------------
 
 if [[ ! -x "$feature_sh" ]]; then
@@ -276,6 +396,10 @@ test_status_prints_human_readable
 test_abort_renames_and_removes_lock
 test_concurrent_start_refused
 test_stale_lock_allows_new_start
+test_continue_redo_without_feedback_errors
+test_continue_redo_feedback_in_prompt
+test_continue_accept_story_to_spec
+test_lane_step_emits_lowercase_marker
 
 echo ""
 echo "Results: $pass_count passed, $fail_count failed"
