@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# audit-claude-overhead — score a Claude Code setup against the nine
+# audit-agent-overhead — score a Claude Code setup against the nine
 # token-waste patterns. Inspects:
 #   - Global  ~/.claude/        (settings, hooks, CLAUDE.md, ad-hoc skills)
 #   - Project ./.claude/        (same, scoped to current repo)
@@ -75,7 +75,7 @@ count_unique_skills_in_plugin() {
     | tr -d ' '
 }
 
-bold "=== audit-claude-overhead ==="
+bold "=== audit-agent-overhead ==="
 echo "Global  : $GLOBAL_DIR"
 echo "Project : $PROJECT_DIR"
 echo "Plugins : $PLUGINS_DB"

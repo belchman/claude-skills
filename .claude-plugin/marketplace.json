@@ -17,10 +17,10 @@
       }
     },
     {
-      "name": "audit-claude-overhead",
+      "name": "audit-agent-overhead",
       "description": "Audit a Claude Code setup (global, project, plugin scope) for the 9 token-waste patterns that silently inflate cost. Slash-only.",
       "version": "1.0.0",
-      "source": "./plugins/audit-claude-overhead",
+      "source": "./plugins/audit-agent-overhead",
       "author": {
         "name": "belchman"
       }

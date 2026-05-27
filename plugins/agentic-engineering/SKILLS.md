@@ -71,7 +71,7 @@ invocation — the orchestrator will never auto-trigger them:
 | --- | --- | --- |
 | Interrogating a plan | `grill-with-docs` | Use `grill-me` only when there's no codebase at all. |
 | PRD work | `write-a-prd` | Use `prd-to-issues` when you already have a PRD and need tickets. |
-| Things going wrong | `diagnose` | If **Claude Code itself** is slow / hitting limits, use the standalone `audit-claude-overhead` plugin instead. |
+| Things going wrong | `diagnose` | If **Claude Code itself** is slow / hitting limits, use the standalone `audit-agent-overhead` plugin instead. |
 | Iterating on code | `tdd` | Use `evolve` when the spec is *a score*, not a behavior — and you want 50–200 candidates with a cognition store + experiment DB. |
 | Reviewing code | `/adversarial-review` | Cross-cutting gaps (docs ↔ config ↔ tests). |
 | Reviewing code | `crap` | A single risky function (complexity × poor coverage). |

@@ -7,8 +7,8 @@ first, then the skill.
 For the per-skill detail table, see `plugins/agentic-engineering/SKILLS.md`.
 This file is the *routing* map — "which phase am I in, and what comes next?"
 
-> `audit-claude-overhead` is **no longer** part of `agentic-engineering`; it
-> ships as a standalone plugin at `plugins/audit-claude-overhead/`.
+> `audit-agent-overhead` is **no longer** part of `agentic-engineering`; it
+> ships as a standalone plugin at `plugins/audit-agent-overhead/`.
 
 ## The build pipeline
 
@@ -49,14 +49,14 @@ issues/NNN-*.md (AFK)        → work-issues       → commits + issues/done/NNN
 | To find cross-cutting gaps in docs/config/tests | Review | `/adversarial-review` (slash-only) |
 | To find the riskiest function on the branch | Review | `crap` |
 | To generate or update `ARCHITECTURE.md` | Document | `/map` (slash-only) |
-| To audit Claude Code's own overhead | (separate plugin) | `/audit-claude-overhead` — in `plugins/audit-claude-overhead/` |
+| To audit Claude Code's own overhead | (separate plugin) | `/audit-agent-overhead` — in `plugins/audit-agent-overhead/` |
 
 ## Pairs that look similar — pick which
 
 | Both about | Default | When to flip |
 | --- | --- | --- |
 | Interrogating a plan | **`grill-with-docs`** | Use `grill-me` only when there's no codebase at all. |
-| Things "going wrong" | `diagnose` | If **Claude Code itself** is slow / hitting limits, use `/audit-claude-overhead` (separate plugin). |
+| Things "going wrong" | `diagnose` | If **Claude Code itself** is slow / hitting limits, use `/audit-agent-overhead` (separate plugin). |
 | Iterating on code | `tdd` | Use `evolve` when the spec is *a score*, not a behavior. |
 | Reviewing code | `/adversarial-review` | Cross-cutting gaps (docs ↔ config ↔ tests). |
 | Reviewing code | `crap` | A single risky function (complexity × poor coverage). |
@@ -91,7 +91,7 @@ invocation — the orchestrator will never auto-trigger them:
 - `/zoom-out` — narrowly purposed micro-skill
 - `/adversarial-review` — dispatches parallel agents, can modify files
 - `/map` — writes `ARCHITECTURE.md`, dispatches parallel agents
-- `/audit-claude-overhead` — separate plugin; walks plugin scope, ~5KB SKILL.md + audit script
+- `/audit-agent-overhead` — separate plugin; walks plugin scope, ~5KB SKILL.md + audit script
 
 ## Attribution
 

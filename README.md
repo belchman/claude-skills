@@ -159,7 +159,7 @@ Skills bundled:
 | `diagnose` | "diagnose this", "debug this" | Reproduce → minimise → hypothesise → instrument → fix |
 | `prototype` | "prototype this", "try a few designs" | Throwaway TUI for state, or radical UI variants on one route |
 | `zoom-out` | `/zoom-out` (explicit-only) | "Go up a layer of abstraction" |
-| `audit-claude-overhead` | `/audit-claude-overhead` (explicit-only) | Walks ~/.claude + project + plugin scope for the 9 token-waste patterns |
+| `audit-agent-overhead` | `/audit-agent-overhead` (explicit-only) | Walks ~/.claude + project + plugin scope for the 9 token-waste patterns |
 
 Convention: skills produce/consume a small set of files (`issues/*.md`, `CONTEXT.md`, `docs/adr/*.md`). The repo's [`CLAUDE.md`](CLAUDE.md) holds the full routing map and decision tree. Several skills vendored from [`mattpocock/skills`](https://github.com/mattpocock/skills) (MIT) — full attribution in `plugins/agentic-engineering/ATTRIBUTION.md`.
 
@@ -211,7 +211,7 @@ Schema verified against the [official docs](https://code.claude.com/docs/en/stat
 **Always-on:**
 
 - Drop in `claude-statusline` so context %, per-turn tokens, and cost are always visible
-- `/audit-claude-overhead` quarterly to keep token overhead under control
+- `/audit-agent-overhead` quarterly to keep token overhead under control
 
 ## License
 
