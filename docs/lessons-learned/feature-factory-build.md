@@ -278,3 +278,50 @@ Ready to proceed to Round 5 (run `/map --section deps` + `crap --full` on shell 
 The map refresh produced a real deliverable that future rounds (and future readers) can rely on. The CRAP gap is a genuine surprise — the dogfooding plan over-promised what the existing tooling can do, which is itself a useful Round 6 input. The .gitignore tightening is the kind of housekeeping that compounds: every untracked scratch directory caught now is one not surfaced as a "?? plugins/..." noise line in every future `git status`.
 
 Ready to proceed to Round 6 (lessons → skill edits).
+
+---
+
+## Round 6 — lessons → skill edits
+
+**Date:** 2026-05-27
+
+**Skills dogfooded:** every skill that absorbed a lesson — `tdd`, `write-a-rubric`, `adversarial-review`, `crap`, `feature`.
+
+**Final state:** Five SKILL.md files updated with hard-won lessons from Rounds 0-5. Open items deferred (with reasons noted).
+
+### What landed
+
+| Skill | Lesson | Source round |
+|---|---|---|
+| `tdd/SKILL.md` | New "When the function under test builds prompts" section — pin byte sequences when the output feeds a cache key. | Round 0 (find readdir order broke `/work-issues`'s prompt cache). |
+| `write-a-rubric/SKILL.md` | New "Rubric < contract" section — passing rubric is necessary but not sufficient; pair with `/adversarial-review` on the diff. | Rounds 3a-3e (5 issues with passing rubrics, 17+ critical contract bugs caught later). |
+| `adversarial-review/SKILL.md` | New bullet in `coverage-reviewer` agent — enumerate state values from the code/spec and verify every reachable state has a handler arm + a test. | Round 3e (9/13 state values had no `continue --accept` arm; rubric didn't catch). |
+| `crap/SKILL.md` | New "Languages NOT supported" section — `lizard` doesn't read shell/Make/CMake/Dockerfile/YAML; document the gap and recommend `shellcheck` + `tests/test_*.sh` + `/adversarial-review` for shell. | Round 5 (orchestrator's 5 shell files were invisible to CRAP). |
+| `feature/SKILL.md` | New "Invocation count vs. checkpoint count" subsection — chain has 3 named checkpoints but 4 `continue --accept` invocations; the inter-lane gate at `backend_validated` is intentional and silent. | Round 4 (full-chain test surfaced the 5-invocation reality). |
+
+### What didn't land (and why)
+
+- **Sidecar suffix triple-source-of-truth** (Round 0 lesson): the three places listing `*.rubric.md`, `*.spec.md`, `*.research.md` (lib header + work-issues SKILL.md L15 + work-issues SKILL.md L22-23) could collapse to one. **Decision: leave as-is.** The list has 3 entries and changes ~never. The cost of consolidating (introduce a "constants file" abstraction) exceeds the cost of keeping the three in sync manually. If a fourth sidecar ever lands, revisit then. Captured here so future-Matt doesn't re-discover.
+- **`/adversarial-review` and `/work-issues` slash-only enforcement** (Round 5 lesson): the SKILLS.md/CLAUDE.md table now honestly distinguishes "hard frontmatter gate" vs "soft description prose" (landed in Round 5 commit). **Decision: no further skill edit.** The split is documented and the rationale (orchestrator programmatic dispatch) is in the table. Future maintainers can read the table and choose deliberately.
+- **`/crap` shell detector** (Round 5 lesson): adding a `pmccabe`-based or bespoke shell reader to `crap.py` is real work — language detection, function-boundary parsing, CRAP metric integration. **Decision: defer to a separate issue.** The documentation now warns users the gap exists, which prevents the false-positive ("`/crap` is clean, so we're fine") that previously was the silent failure mode. If someone wants the feature, file an issue.
+- **`feature/SKILL.md` inter-lane gate design call** (Round 4 lesson): keep silent vs. rename "Checkpoint 2.5" vs. collapse to one continue. **Decision: keep silent + document.** The pause is the right design (user can abort between lanes) and renaming it would over-promise — there's no "this is a hard gate, you must respond" semantic in the current code, just a natural script boundary. Documenting it in SKILL.md "Invocation count vs. checkpoint count" closes the gap.
+
+### Pattern reinforced across all six rounds
+
+> **Rubric pins the visible shape. Adversarial review pins the contract. Both are needed.**
+
+This is the highest-value lesson of the entire dogfooding pass. Every issue (001-005) had a careful, sharp rubric. Every issue passed its rubric. Every issue still had critical bugs caught by adversarial review *after* the rubric passed. The bugs were structural (state-machine completeness, atomicity, exit-code propagation) — the kind a static artifact inspection cannot see by design. The skill edits in this round (tdd, write-a-rubric, adversarial-review) now name this pattern explicitly so future build rounds in any project benefit from it without re-discovery.
+
+### Round 6 verdict — and dogfooding pass close-out
+
+Five skill edits, four deferred-with-reason items, one named pattern. The dogfooding plan in `docs/plans/feature-factory.md` is complete:
+
+- Round 0 — lib extraction precursor ✅
+- Round 1 — `write-a-prd` + `prd-to-issues` on the factory ✅
+- Round 2 — `grill-with-docs` + CONTEXT.md + ADR 0001 ✅
+- Round 3 — `/work-issues` × 5 (issues 001-005) ✅
+- Round 4 — `/feature` self-test (stubbed, full chain) ✅
+- Round 5 — `/map` refresh + `crap` sweep + routing-docs final pass ✅
+- Round 6 — lessons → skill edits ✅
+
+The factory exists. The factory has been used on itself. The factory's findings are written down. Future feature work in this repo (or in any downstream consumer) starts at `/feature "<brief>"` and exits at `done` with three real checkpoints between.

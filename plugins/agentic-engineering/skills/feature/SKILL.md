@@ -43,6 +43,10 @@ bin/feature.sh status <id>                         # print state.json in human f
 
 Three checkpoints (CP1 after story, CP2 after spec+rubric, CP3 before PR). Ten steps between them. See `docs/plans/feature-factory.md` §F for the full chain — don't restate it here. Lessons in `docs/lessons-learned/feature-factory-build.md`.
 
+### Invocation count vs. checkpoint count
+
+In practice the chain has **three named checkpoints (CP1/CP2/CP3) but four `continue --accept` invocations** before `done`. The fourth pause happens at `state = backend_validated` — the orchestrator pauses between the backend and frontend lanes so the user can abort if the backend's commit looked wrong before frontend touches the codebase. This is intentional (an inter-lane gate, not a UX oversight) but isn't paged with a "CHECKPOINT" banner. When you explain `/feature` to a user, tell them: "5 total invocations — start, then 4 × continue. The third pause is silent." See lessons-learned Round 4 for the design rationale.
+
 ## Dependencies
 
 This skill assumes the following have been merged (issues 001, 002, 003, 004 of the feature-factory build):

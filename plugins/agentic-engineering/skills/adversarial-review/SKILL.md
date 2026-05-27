@@ -182,6 +182,7 @@ You are an adversarial TEST COVERAGE reviewer. Focus on:
 - Check for specialized testing paradigms (BDD/Gherkin `.feature` files, property-based testing, snapshot testing, contract testing) and validate against their framework requirements. For all other tests, evaluate against the project's actual testing patterns.
 - Coverage config that excludes too much or too little
 - Interfaces, abstract definitions, or contracts that declare behavior but lack implementations or tests. Skip if the language doesn't use explicit type/interface declarations.
+- **State-machine completeness**: if the code under review references a finite set of state values (e.g., a `case "$state" in ...` block, an enum + dispatcher, a status-field FSM), enumerate the state values from the code/spec and verify every reachable state has a handler arm AND a corresponding test. Missing arms appear as `*) echo "unknown state" ;;` catchalls that hide real bugs. Look for: `last_completed_step` / `status` / `phase` / `state` / `step` field names in JSON or dataclass schemas; lists of constants in `### States` or `## State machine` sections of a spec; a state-transition diagram (Mermaid `stateDiagram`, ASCII boxes) — these are the FSM ground truth.
 
 [ARCHITECTURE.MD CONTEXT PREAMBLE if available]
 [DIFF-SCOPE PREAMBLE if --diff]

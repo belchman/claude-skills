@@ -122,3 +122,11 @@ What this criterion does right:
 - Do not modify the source issue or PRD.
 - Do not call the Managed Agents API. Do not call the Files API. This skill produces text only.
 - If the source is too thin to produce ≥4 sharp criteria, ask the user — don't fabricate. If no user is available (e.g., AFK / autonomous run), write a sibling `QUESTIONS.md` listing what you'd have asked, then produce a best-guess rubric with assumptions clearly marked at the top.
+
+## Rubric &lt; contract
+
+A rubric grades the **artifact's observable shape** — file paths, headings, byte equality, exit codes. It does NOT grade the **contract** the artifact participates in: race conditions, exit-code propagation through pipelines, behavior on empty/whitespace input, behavior on missing trailing newline, behavior under SIGKILL, atomicity of state writes, byte-stability for prompt caching. Most production bugs live in the contract, not the artifact.
+
+This means **a passing rubric is necessary but not sufficient**. The natural follow-up after `write-a-rubric` is a contract-level review — `/adversarial-review` against the diff catches what the rubric can't see by design. Pattern observed across the feature-factory dogfooding: 5 issues each had passing rubrics yet adversarial review caught **17+ critical bugs** the rubric was structurally unable to anticipate. Examples that recurred: missing trailing newline dropped last line of input; non-atomic state write torn on crash; exit codes silently swallowed by `|| true`; whitespace in user input matched the wrong path; glob characters silently passed through.
+
+When sharpening criteria, prefer ones that observe the *artifact*. Resist the urge to write criteria like "handles SIGKILL gracefully" or "is robust to concurrent invocations" — those need active testing the grader can't do from a static file. Leave them to the post-rubric contract review. Document the boundary in the rubric itself if it's load-bearing (e.g., a final `## Out of rubric scope` section listing the contract concerns deferred to `/adversarial-review`).

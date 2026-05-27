@@ -187,3 +187,9 @@ On `apply`, write the change with Edit/Write and remind the user to re-run their
 - Never delete `.crap-cache/` — it's the speed lever.
 - If `--set-baseline`, force `scope=full` regardless of CLI/config.
 - `crap.py` is stdlib-only; do not add dependencies to it.
+
+## Languages NOT supported
+
+`lizard` is the cyclomatic-complexity engine and its reader list is the source of truth for what `/crap` can score. Run `python3 -c "import lizard; print([r.__name__ for r in lizard.languages()])"` to enumerate. Languages NOT in that list — including **POSIX shell, Bash, Zsh, Fish, PowerShell, Make, CMake, Dockerfile, YAML** — are silently skipped during the `lizard` pass. The score report will not flag them, and a shell-heavy repo can pass `/crap` while harboring genuinely complex, untested functions.
+
+If your repo's hot path is in shell (orchestrators, build scripts, CI), `/crap` is not sufficient coverage. Pair it with: (a) `shellcheck` for static analysis, (b) explicit per-script integration tests under `tests/test_*.sh`, (c) `/adversarial-review` to catch contract-level bugs in shell that no metric will catch (race conditions, exit-code propagation, atomic writes). Document the gap honestly in `ARCHITECTURE.md` rather than letting the absence of a CRAP score imply quality.

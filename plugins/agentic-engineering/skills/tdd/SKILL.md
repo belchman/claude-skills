@@ -71,3 +71,7 @@ After GREEN, look for [refactor candidates](refactoring.md):
 [ ] Code is minimal for this test
 [ ] No speculative features added
 ```
+
+## When the function under test builds prompts
+
+If your function assembles a prompt that gets shipped to an LLM (or stored in a cache key), add one regression test that pins the **exact byte sequence** for a representative input. Prompt-cache hit rates depend on byte-equal prefixes; a refactor that re-orders fields, swaps a `sort -u` for `awk '!seen[$0]++'`, or relies on `find`'s readdir order can silently change the bytes without changing the test's observable behavior — and shred the cache. Test seen in practice: extracting a helper changed `find issues -name '*.md'` order from one machine to another; behavior tests stayed green; prompt cache lost ~40% of its hit rate for a day.
