@@ -12,8 +12,8 @@ The autonomous build loop: brief → PRD → issues → rubrics → AFK work.
 | --- | --- |
 | `write-a-prd` | You have a brief or idea and need a PRD at `issues/prd.md`. |
 | `prd-to-issues` | You have a PRD and need it sliced into `issues/NNN-*.md` tickets. |
-| `write-a-rubric` | You want a grader-checkable "what does done look like" sidecar (`issues/NNN-*.rubric.md`) for an issue or PRD. |
 | `write-a-spec` | You have an approved story/issue and need a technical brief (data model, API, file-by-file change list with lane-scoped `paths` blocks, tests, risks). |
+| `write-a-rubric` | You want a grader-checkable "what does done look like" sidecar (`issues/NNN-*.rubric.md`) for an issue or PRD. |
 | `/work-issues` | Autonomously run an issue end-to-end (explore, TDD, commit, archive). **Slash-only.** |
 | `/feature` | Orchestrate the full chain on one brief: map → research → story → spec → rubric → backend → validator → frontend → validator → PR, with three human checkpoints. Resumable. **Slash-only.** |
 
