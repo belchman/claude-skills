@@ -167,6 +167,8 @@ Schema verified against the [official docs](https://code.claude.com/docs/en/stat
 4. `/write-a-rubric` — define gradeable "what done looks like" per issue worth it
 5. `/work-issues` (or `bin/loop.sh` for AFK) — autonomously work the queue
 
+Or run the whole chain on a single brief via `/feature` — a thin wrapper that Bash-invokes `plugins/agentic-engineering/skills/feature/bin/feature.sh start "<brief>"` and pauses at 3 checkpoints (approve story, approve spec+rubric, approve PR). Steps in between (map refresh, research, story draft, spec, rubric, backend lane, validator, frontend lane, validator) all run in fresh `claude -p` subprocesses so context never collapses. Resumable across sessions via `.feature_runs/<id>/state.json`. See [`docs/plans/feature-factory.md`](docs/plans/feature-factory.md) for the full chain and failure modes.
+
 **Quality / review (existing code):**
 
 1. `/map` on a new project → generates `ARCHITECTURE.md`

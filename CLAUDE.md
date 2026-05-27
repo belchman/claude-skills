@@ -37,7 +37,9 @@ issues/NNN-*.md (AFK)        → work-issues       → commits + issues/done/NNN
 | A PRD from a brief | Pipeline | `write-a-prd` |
 | Work tickets from an existing PRD | Pipeline | `prd-to-issues` |
 | A grader-checkable rubric for an issue/PRD | Pipeline | `write-a-rubric` |
+| A technical spec / brief from an approved story (data model, API, file-by-file with lane allowlists, tests, risks) | Pipeline | `write-a-spec` |
 | To autonomously work the issue queue | Pipeline | `/work-issues` (slash-only) |
+| To orchestrate the full chain on one brief — research → story → spec → rubric → backend → validator → frontend → validator → PR, with three human checkpoints | Pipeline | `/feature` (slash-only) |
 | To stress-test a plan / interrogate a design (default) | Design | **`grill-with-docs`** |
 | To brainstorm with no project context at all (rare) | Design | `grill-me` |
 | To flush out a design before committing | Design | `prototype` |
@@ -82,6 +84,15 @@ issues/NNN-*.md (AFK)        → work-issues       → commits + issues/done/NNN
 2. Surprising without context — a future reader looks at the code and asks "why on earth?".
 3. Real trade-off — there were genuine alternatives.
 
+## Lane boundaries
+
+The `/feature` orchestrator and `/work-issues` (when invoked with a lane preamble) scope each lane's allowlist via a per-lane prompt (`## Allowlist` block + escape valve). Lane labels in `issues/NNN-*.spec.md` H3 headings must match the labels declared in this section. **For `claude-skills` there is no real backend/frontend split** — this repo is a flat marketplace of skills, so the two labels below are illustrative only and used exclusively by the integration tests in `tests/test_feature_orchestrator.sh`.
+
+- `backend` — illustrative patterns: `plugins/*/skills/*/bin/*.sh`, `plugins/*/skills/crap/*.py`, `tests/test_*.sh`
+- `frontend` — illustrative patterns: `plugins/*/skills/*/SKILL.md`, `plugins/*/SKILLS.md`, `README.md`
+
+A downstream repo using `/feature` **must define its own** `## Lane boundaries` section in its own `CLAUDE.md` reflecting that repo's actual backend/frontend (or backend/CLI, or service/library) split. The `write-a-spec` skill reads this section to allocate file lists to the right lane; if it's missing, the resulting spec carries a Risks-section note and the user picks the labels at Checkpoint 2.
+
 ## Heavyweight skills (slash-only)
 
 These have `disable-model-invocation: true` and only fire on explicit slash
@@ -91,6 +102,7 @@ invocation — the orchestrator will never auto-trigger them:
 - `/zoom-out` — narrowly purposed micro-skill
 - `/adversarial-review` — dispatches parallel agents, can modify files
 - `/map` — writes `ARCHITECTURE.md`, dispatches parallel agents
+- `/feature` — orchestrates the chain end-to-end; commits via lane builders, dispatches `claude -p` per step
 - `/audit-agent-overhead` — separate plugin; walks plugin scope, ~5KB SKILL.md + audit script
 
 ## Attribution
