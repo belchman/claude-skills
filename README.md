@@ -1,6 +1,6 @@
 # claude-skills
 
-A marketplace of individually-installable commands and skills for [Claude Code](https://claude.ai/claude-code). Each plugin stands alone — install only what you need.
+A marketplace of individually-installable plugins for [Claude Code](https://claude.ai/claude-code). Each plugin stands alone — install only what you need.
 
 ## Install
 
@@ -13,22 +13,33 @@ Add the marketplace once:
 Then install any subset:
 
 ```
-/plugin install map@belchman-claude-skills
-/plugin install adversarial-review@belchman-claude-skills
-/plugin install crap@belchman-claude-skills
 /plugin install agentic-engineering@belchman-claude-skills
+/plugin install audit-agent-overhead@belchman-claude-skills
+/plugin install claude-md-audit@belchman-claude-skills
 ```
 
 ## Plugins
 
-### `map` — slash command `/map`
+### `agentic-engineering` — the build / review / debug pipeline
 
-Generates or updates an `ARCHITECTURE.md` at the root of your repository: a living map of structure, dependencies, conventions, and high-coupling zones.
+Composable skills grouped by **phase of work**: PRD → issues → rubrics → autonomous work, plus design interrogation, TDD, deep-module refactoring, evolutionary search, CRAP reduction, debugging, adversarial review, and ARCHITECTURE.md mapping.
 
-- Works on any language or framework (polyglot-adaptive)
-- Dispatches parallel agents for structure, dependencies, and conventions
-- Incremental updates via `git diff` — only re-maps what changed
-- Flags high-risk zones by fan-in analysis
+| Phase | Skills | Purpose |
+| --- | --- | --- |
+| **1. Pipeline** | `write-a-prd`, `prd-to-issues`, `write-a-rubric`, `/work-issues` | Brief → PRD → issues → rubrics → autonomous work |
+| **2. Design** | `grill-with-docs`, `grill-me`, `prototype` | Stress-test plans before any code changes |
+| **3. Implement** | `tdd`, `improve-codebase-architecture`, `evolve` | Move the code itself |
+| **4. Debug** | `diagnose`, `/zoom-out` | Find and fix what's broken |
+| **5. Review** | `/adversarial-review`, `crap` | Audit existing code for gaps and risk |
+| **6. Document** | `/map` | Keep `ARCHITECTURE.md` current |
+
+Full per-skill table: [`plugins/agentic-engineering/SKILLS.md`](plugins/agentic-engineering/SKILLS.md). Routing decision tree: [`CLAUDE.md`](CLAUDE.md). Slash-only skills (`/work-issues`, `/zoom-out`, `/adversarial-review`, `/map`) have `disable-model-invocation: true` and only fire on explicit invocation.
+
+Convention: skills produce/consume a small set of files (`issues/*.md`, `issues/NNN-*.rubric.md`, `rubrics/*.md`, `CONTEXT.md`, `docs/adr/*.md`, `ARCHITECTURE.md`). Several skills are vendored from [`mattpocock/skills`](https://github.com/mattpocock/skills) (MIT) and [`GAIR-NLP/ASI-Evolve`](https://github.com/GAIR-NLP/ASI-Evolve) (Apache 2.0) — full attribution in [`plugins/agentic-engineering/ATTRIBUTION.md`](plugins/agentic-engineering/ATTRIBUTION.md).
+
+#### Notable: `/map`
+
+Generates or updates an `ARCHITECTURE.md` at the root of your repository: a living map of structure, dependencies, conventions, and high-coupling zones. Polyglot-adaptive; dispatches parallel agents; incremental via `git diff`; flags high-risk zones by fan-in.
 
 ```
 /map                  # first run or incremental update
@@ -36,33 +47,23 @@ Generates or updates an `ARCHITECTURE.md` at the root of your repository: a livi
 /map --section deps   # update one section (structure | deps | conventions | impact)
 ```
 
----
+#### Notable: `/adversarial-review`
 
-### `adversarial-review` — slash command `/adversarial-review`
-
-Runs three parallel reviewer agents against your project's docs, config, and tests — finding contradictions, gaps, and missing pieces, then fixing what you approve.
-
-- **Spec reviewer** — contradictions, missing definitions, ambiguous behavior
-- **Config reviewer** — broken hooks, permission gaps, env var issues
-- **Coverage reviewer** — untested exports, unimplemented contracts, framework mismatches
-- Uses `ARCHITECTURE.md` (from `/map`) for blast-radius analysis when available
-- `--diff` mode scopes the review to changes since the last map
+Three parallel reviewer agents (spec, config, coverage) against your project's docs, config, and tests — find contradictions, gaps, and missing pieces, then fix what you approve. Uses `ARCHITECTURE.md` (from `/map`) for blast-radius analysis when available.
 
 ```
-/adversarial-review                 # full review of all project files
-/adversarial-review --diff          # review only what changed since last /map
-/adversarial-review path/to/file    # review a specific file or glob
+/adversarial-review                 # full review
+/adversarial-review --diff          # only what changed since last /map
+/adversarial-review path/to/file    # specific file or glob
 ```
 
----
-
-### `crap` — skill (auto-triggers on `/crap` or risky-code questions)
+#### Notable: `crap`
 
 Ranks functions by CRAP score (cyclomatic complexity × lack of real test coverage) on the current branch, then proposes either a refactor or missing tests for the worst offender.
 
 - CRAP = `cc² × (1 − eff_cov)³ + cc`, where `eff_cov = line_cov × mutation_kill_rate`
 - Cache + baseline on disk so repeat runs are fast and regressions are gated
-- Per-language detectors for coverage/mutation (Python, JS/TS, Go, Rust, Java/Kotlin, C/C++) — see [`plugins/crap/skills/crap/detectors.md`](plugins/crap/skills/crap/detectors.md)
+- Per-language detectors for coverage/mutation (Python, JS/TS, Go, Rust, Java/Kotlin, C/C++) — see [`detectors.md`](plugins/agentic-engineering/skills/crap/detectors.md)
 - After ranking, offers a language-aware refactor or a test-case draft for the single worst function
 
 ```
@@ -73,33 +74,11 @@ Ranks functions by CRAP score (cyclomatic complexity × lack of real test covera
 /crap --set-baseline    # write .crap-baseline.json and exit
 ```
 
-**Dependencies.** `/crap` needs `python3` and `lizard` (`pip install lizard`). Coverage and mutation tools are language-specific and installed on demand — the skill prints the exact install command when something is missing. See [`plugins/crap/skills/crap/crap.yml.example`](plugins/crap/skills/crap/crap.yml.example) for project configuration.
+**Dependencies.** `/crap` needs `python3` and `lizard` (`pip install lizard`). Coverage and mutation tools are language-specific and installed on demand — the skill prints the exact install command when something is missing. See [`crap.yml.example`](plugins/agentic-engineering/skills/crap/crap.yml.example) for project configuration.
 
-#### How `/crap` scores code
+**Theory.** The CRAP metric is Alberto Savoia's 2007 proposal ([original post](https://www.artima.com/weblogs/viewpost.jsp?thread=215899)). Threshold of 30 and the "≤ 5% of methods above threshold or the project is crappy" rule both come straight from his paper. **Deviation from Savoia.** He specified *basis path coverage*. This skill substitutes `line_cov × mutation_kill_rate` for `eff_cov` — directly addressing the weakness Savoia himself flagged: *"[CRAP] cannot detect great code coverage and lousy tests."* Mutation kill rate exposes exactly that case.
 
-```
-1. Load config (.crap.yml or defaults; CLI flags win)
-2. Determine scope — changed files vs. full tree
-3. lizard → function registry (file, name, cc, lines, arg_signature)
-4. Filter — drop functions where CRAP_max (cc² + cc) ≤ threshold
-5. Cache-split — hash each survivor; skip any already measured
-6. Measure — coverage + mutation on the cache-miss set only
-7. Score — compute CRAP per function, weight by churn, diff vs. baseline
-8. Report — markdown table + Savoia headline (% of methods above threshold)
-9. Worst offender — propose a refactor OR anti-mutation tests; prompt to apply
-```
-
-Full details in [`plugins/crap/skills/crap/SKILL.md`](plugins/crap/skills/crap/SKILL.md). Language→tool matrix in [`detectors.md`](plugins/crap/skills/crap/detectors.md). Refactor patterns in [`refactor-playbook.md`](plugins/crap/skills/crap/refactor-playbook.md).
-
-#### Theory
-
-The CRAP metric is Alberto Savoia's 2007 proposal ([original post](https://www.artima.com/weblogs/viewpost.jsp?thread=215899)). Threshold of 30 and the "≤ 5% of methods above threshold or the project is crappy" rule both come straight from his paper.
-
-**Deviation from Savoia.** He specified *basis path coverage*. This skill substitutes `line_cov × mutation_kill_rate` for `eff_cov` — which directly addresses the weakness Savoia himself flagged: *"[CRAP] cannot detect great code coverage and lousy tests."* Mutation kill rate exposes exactly that case (lousy tests fail to kill mutants, so `eff_cov` drops even when line coverage looks fine). The tests-first-before-refactor guardrail on the worst offender is Savoia's own advice made explicit in the skill's workflow.
-
-#### Dogfood
-
-This repo runs `/crap` against itself. After the refactor arc of driving `crap.py`'s own CRAP to zero:
+**Dogfood.** This repo runs `/crap` against itself:
 
 | Metric | Before | After |
 |---|---:|---:|
@@ -115,53 +94,39 @@ To reproduce locally from the repo root:
 pip install lizard coverage mutmut pytest
 
 # 1. Tests + coverage
-coverage run --source=plugins/crap/skills/crap -m pytest tests/ -q
+coverage run --source=plugins/agentic-engineering/skills/crap -m pytest tests/ -q
 coverage json -o /tmp/coverage.raw.json
 
 # 2. Mutations (writes mutants/ — gitignored)
 mutmut run
 
 # 3. Pipeline
-python3 plugins/crap/skills/crap/crap.py lizard plugins/crap/skills/crap/crap.py -o /tmp/fns.json
-python3 plugins/crap/skills/crap/crap.py filter --functions /tmp/fns.json --threshold 30 > /tmp/surv.json
-python3 plugins/crap/skills/crap/crap.py normalize-coverage --tool coveragepy /tmp/coverage.raw.json -o /tmp/coverage.json
-python3 plugins/crap/skills/crap/crap.py score \
+python3 plugins/agentic-engineering/skills/crap/crap.py lizard plugins/agentic-engineering/skills/crap/crap.py -o /tmp/fns.json
+python3 plugins/agentic-engineering/skills/crap/crap.py filter --functions /tmp/fns.json --threshold 30 > /tmp/surv.json
+python3 plugins/agentic-engineering/skills/crap/crap.py normalize-coverage --tool coveragepy /tmp/coverage.raw.json -o /tmp/coverage.json
+python3 plugins/agentic-engineering/skills/crap/crap.py score \
     --functions /tmp/fns.json --survivors /tmp/surv.json \
     --coverage /tmp/coverage.json --mutation /tmp/mutation.json \
     --no-churn --no-baseline --threshold 30
 ```
 
-(The mutmut-3 → normalized JSON conversion is a small Python snippet that maps mutmut's function-keyed output to the per-line shape `crap.py score` expects. Mutmut 2.x's `mutmut results --json` output works out of the box via `normalize-mutation --tool mutmut`.)
+---
+
+### `audit-agent-overhead` — slash command `/audit-agent-overhead`
+
+Walks `~/.claude`, the current project, and plugin scope looking for the 9 token-waste patterns that silently inflate Claude Code cost: noisy hooks, oversized SKILL.md files, ambient context drift, unbounded transcripts, redundant agents, and friends. Slash-only — runs only on explicit invocation.
+
+```
+/audit-agent-overhead
+```
 
 ---
 
----
+### `claude-md-audit` — PreToolUse hook
 
-### `agentic-engineering` — eleven composable skills
+A `PreToolUse` hook that lints `CLAUDE.md` on every `Edit`/`Write` and blocks writes that introduce structural errors (broken frontmatter, missing required sections, conflicting routing tables). Useful when you're iterating on `CLAUDE.md` itself and want a guardrail.
 
-Bundles the build pipeline (PRD → issues → autonomous work) plus TDD, architectural deepening, bug diagnosis, prototyping, domain-aware interrogation, navigation, and a Claude Code overhead audit.
-
-```
-/plugin install agentic-engineering@belchman-claude-skills
-```
-
-Skills bundled:
-
-| Skill | Trigger | Purpose |
-| --- | --- | --- |
-| `write-a-prd` | "draft a PRD", "write a spec" | Brief → `issues/prd.md` |
-| `prd-to-issues` | "break this PRD into issues" | `issues/prd.md` → `issues/NNN-*.md` (HITL/AFK) |
-| `work-issues` | `/work-issues` (explicit-only) | Autonomously work one AFK issue end-to-end. Has `bin/loop.sh` headless runner. |
-| `tdd` | "TDD this", "red-green-refactor" | One-test-at-a-time vertical slicing |
-| `grill-with-docs` | "grill this", "stress-test this design" | Default grilling — challenges plan against `CONTEXT.md` and `docs/adr/` |
-| `grill-me` | "grill me" (rare — green-field only) | Pure socratic interrogation when no codebase exists |
-| `improve-codebase-architecture` | "find deepening opportunities" | Surface shallow modules; deletion test; grilling loop on candidates |
-| `diagnose` | "diagnose this", "debug this" | Reproduce → minimise → hypothesise → instrument → fix |
-| `prototype` | "prototype this", "try a few designs" | Throwaway TUI for state, or radical UI variants on one route |
-| `zoom-out` | `/zoom-out` (explicit-only) | "Go up a layer of abstraction" |
-| `audit-agent-overhead` | `/audit-agent-overhead` (explicit-only) | Walks ~/.claude + project + plugin scope for the 9 token-waste patterns |
-
-Convention: skills produce/consume a small set of files (`issues/*.md`, `CONTEXT.md`, `docs/adr/*.md`). The repo's [`CLAUDE.md`](CLAUDE.md) holds the full routing map and decision tree. Several skills vendored from [`mattpocock/skills`](https://github.com/mattpocock/skills) (MIT) — full attribution in `plugins/agentic-engineering/ATTRIBUTION.md`.
+See [`plugins/claude-md-audit/README.md`](plugins/claude-md-audit/README.md) for the lint rules.
 
 ---
 
@@ -194,19 +159,20 @@ Schema verified against the [official docs](https://code.claude.com/docs/en/stat
 
 ## Recommended workflow
 
+**Build (new work):**
+
+1. `/write-a-prd` — interview, produce `issues/prd.md`
+2. `/grill-with-docs` — stress-test the PRD against `CONTEXT.md` / `docs/adr/`
+3. `/prd-to-issues` — break PRD into HITL / AFK issues
+4. `/write-a-rubric` — define gradeable "what done looks like" per issue worth it
+5. `/work-issues` (or `bin/loop.sh` for AFK) — autonomously work the queue
+
 **Quality / review (existing code):**
 
 1. `/map` on a new project → generates `ARCHITECTURE.md`
 2. `/adversarial-review` → finds gaps in docs and config
 3. `/crap` → finds risky, under-tested code to address next
 4. After changes, `/map --section deps` or `/adversarial-review --diff` to stay current
-
-**Build (new work, with `agentic-engineering`):**
-
-1. `/write-a-prd` — interview, produce `issues/prd.md`
-2. `/grill-with-docs` — stress-test the PRD against `CONTEXT.md` / `docs/adr/`
-3. `/prd-to-issues` — break PRD into HITL / AFK issues
-4. `/work-issues` (or `bin/loop.sh` for AFK) — autonomously work the queue
 
 **Always-on:**
 
