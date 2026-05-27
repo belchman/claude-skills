@@ -49,7 +49,14 @@ Iterate until approved.
 
 **AFK fallback** (no user available — `/feature` running headlessly, `claude -p` invocation, etc.): skip the quiz. Make your best granularity call from the PRD alone, then proceed straight to step 5. In each issue file's `## What to build` section, add a `### Slice rationale` sub-section noting why this slice exists as its own ticket (vs. being folded into a sibling) — a future reviewer or downstream agent reads it to challenge the slicing at the next checkpoint. If you're uncertain between two slicings, write a sibling `QUESTIONS.md` listing the choice you made and the alternative.
 
-**Narrow-feature note:** The "vertical slice through all layers (schema, API, UI, tests)" framing assumes a multi-layer feature. For a single-file CLI flag, a one-script change, or a docs-only update, the layers may collapse to one. Don't force-split a one-issue feature into three issues just to satisfy "many thin slices"; one issue with clear acceptance criteria is the right answer when there's only one layer to cut through. The "deep module + wiring" split is the most common natural 2-issue shape for narrow features.
+**Narrow-feature note:** The "vertical slice through all layers (schema, API, UI, tests)" framing assumes a multi-layer feature. For a single-file CLI flag, a one-script change, or a docs-only update, the layers may collapse to one. Don't force-split a one-issue feature into three issues just to satisfy "many thin slices"; one issue with clear acceptance criteria is the right answer when there's only one layer to cut through.
+
+The most common natural 2-issue shapes for narrow features:
+
+- **Deep module + wiring** — one issue for the testable helper (no CLI noise), one for the CLI-level integration. Pattern: implementing `archive_cache(src, dest) -> sha_hex` separately from `--backup-cache <dest>` flag wiring.
+- **Code + discovery doc** — for plugin/skill/library features where a SKILL.md or README discovery surface needs to advertise the new behavior. The doc lives in a different file (often a different lane — `### frontend` in this repo's split), and reviewers care about different things (correctness vs. discoverability/example accuracy). Pattern: `--json` flag in `crap.py` (issue 001) + `## Invocation` update in `crap/SKILL.md` (issue 002).
+
+**Blocking direction:** when one issue depends on another, prefer **doc-blocked-on-code** (not the reverse). The doc should cite the as-shipped flag spelling, exit code, output format, etc. — landing the doc first means it documents a spec, not behavior, and tends to drift. Exception: when the doc IS the spec contract (e.g. an OpenAPI schema that drives codegen), invert.
 
 ### 5. Create the issue files
 

@@ -23,7 +23,7 @@ Invoked when the user wants to create a PRD. Skip steps you judge unnecessary.
 
 - Read the brief/source material in full; explore the repo for context (step 2 runs the same).
 - Skip the interview (step 3) and module-confirmation (step 4). Make best-guess decisions on every branch.
-- Add an `## Assumptions` sub-section to the PRD (just before `## Further Notes`) listing each non-trivial decision you made without user input — one bullet per assumption, written as a falsifiable claim (e.g. "Cache directory defaults to `.crap-cache/`" rather than "made some assumptions about caching"). A reviewer or downstream agent reads these to challenge them at the next checkpoint.
+- Add an `## Assumptions` section to the PRD (place it adjacent to `## Further Notes` — either just before or just after is fine, as long as it's present and labeled exactly `## Assumptions`) listing each non-trivial decision you made without user input. One bullet per assumption, written as a falsifiable claim (e.g. "Cache directory defaults to `.crap-cache/`" rather than "made some assumptions about caching"). Log decisions where the brief is **silent**, not decisions the brief already pins — if the brief says "sha256", you don't log "we use sha256" as an assumption. A reviewer or downstream agent reads these to challenge them at the next checkpoint, and `prd-to-issues` reads them to inform slice rationale.
 - Keep referenced paths **repo-root-relative** (e.g. `plugins/agentic-engineering/skills/crap/crap.py`, not `crap.py`) — downstream `write-a-spec` consumes them into a lane allowlist that the orchestrator's parser matches literally.
 
 <prd-template>
