@@ -57,16 +57,21 @@ Move the code itself.
 | --- | --- |
 | `/map` | Generate or update `ARCHITECTURE.md`. Diff-aware on incremental runs. **Slash-only.** |
 
-## Heavyweight skills (slash-only)
+## Heavyweight skills (slash-only by intent)
 
-Skills with `disable-model-invocation: true` only fire on explicit slash
-invocation — the orchestrator will never auto-trigger them:
+Skills below are intended for explicit slash invocation only. Some enforce
+that via `disable-model-invocation: true` in their YAML frontmatter (a hard
+gate the runtime checks); others enforce it via prose in the `description:`
+field ("Use only when explicitly asked…") — softer, but lets another
+orchestrator skill (`/feature`) dispatch them programmatically when needed.
 
-- `/work-issues` — commits code, modifies the issue queue
-- `/zoom-out` — narrowly purposed micro-skill
-- `/adversarial-review` — dispatches parallel agents, can modify files
-- `/map` — writes `ARCHITECTURE.md`, dispatches parallel agents
-- `/feature` — orchestrates the whole chain; commits code via lane builders, dispatches `claude -p` per step
+| Skill | How slash-only is enforced |
+| --- | --- |
+| `/zoom-out` | frontmatter `disable-model-invocation: true` |
+| `/feature` | frontmatter `disable-model-invocation: true` |
+| `/work-issues` | description prose (so `/feature` can dispatch it per-lane) |
+| `/adversarial-review` | description prose (so `/feature` can dispatch the validator pass) |
+| `/map` | description prose (so `/feature` can dispatch `step_refresh_map`) |
 
 ## Pairs that look similar
 

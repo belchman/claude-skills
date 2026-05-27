@@ -93,17 +93,22 @@ The `/feature` orchestrator and `/work-issues` (when invoked with a lane preambl
 
 A downstream repo using `/feature` **must define its own** `## Lane boundaries` section in its own `CLAUDE.md` reflecting that repo's actual backend/frontend (or backend/CLI, or service/library) split. The `write-a-spec` skill reads this section to allocate file lists to the right lane; if it's missing, the resulting spec carries a Risks-section note and the user picks the labels at Checkpoint 2.
 
-## Heavyweight skills (slash-only)
+## Heavyweight skills (slash-only by intent)
 
-These have `disable-model-invocation: true` and only fire on explicit slash
-invocation — the orchestrator will never auto-trigger them:
+Skills below are intended for explicit slash invocation only. Two enforcement
+mechanisms are in use:
 
-- `/work-issues` — commits code, modifies the issue queue
-- `/zoom-out` — narrowly purposed micro-skill
-- `/adversarial-review` — dispatches parallel agents, can modify files
-- `/map` — writes `ARCHITECTURE.md`, dispatches parallel agents
-- `/feature` — orchestrates the chain end-to-end; commits via lane builders, dispatches `claude -p` per step
-- `/audit-agent-overhead` — separate plugin; walks plugin scope, ~5KB SKILL.md + audit script
+- **Hard gate**: `disable-model-invocation: true` in the SKILL.md frontmatter. The runtime refuses to fire the skill from conversational context — only explicit slash invocation works.
+- **Soft gate**: prose in the `description:` field ("Use only when explicitly asked…"). Softer than the flag, but lets another orchestrator skill (`/feature`) dispatch them programmatically when needed.
+
+| Skill | Enforcement | What it does |
+| --- | --- | --- |
+| `/zoom-out` | hard (frontmatter flag) | narrowly purposed micro-skill |
+| `/feature` | hard (frontmatter flag) | orchestrates the chain end-to-end; commits via lane builders |
+| `/work-issues` | soft (description prose) | commits code, modifies the issue queue; `/feature` dispatches per lane |
+| `/adversarial-review` | soft (description prose) | dispatches parallel agents, can modify files; `/feature` dispatches for validator |
+| `/map` | soft (description prose) | writes `ARCHITECTURE.md`, dispatches parallel agents; `/feature` dispatches `step_refresh_map` |
+| `/audit-agent-overhead` | separate plugin | walks plugin scope, ~5KB SKILL.md + audit script |
 
 ## Attribution
 

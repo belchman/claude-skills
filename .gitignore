@@ -17,3 +17,9 @@ __pycache__/
 .crap-baseline.json
 mutants/
 logs/
+
+# /feature orchestrator run state
+.feature_runs/
+
+# skill-creator eval workspaces (per-skill, generated during iteration)
+plugins/*/skills/*-workspace/

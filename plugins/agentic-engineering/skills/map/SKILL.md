@@ -1,7 +1,6 @@
 ---
 name: map
-description: 'Generate or update ARCHITECTURE.md — a living map of a project''s structure, dependencies, and high-coupling zones. Polyglot-adaptive. Heavyweight (writes ARCHITECTURE.md, dispatches parallel agents); explicit invocation only. Triggers: /map, "generate ARCHITECTURE.md", "map this codebase".'
-disable-model-invocation: true
+description: 'Generate or update ARCHITECTURE.md — a living map of a project''s structure, dependencies, and high-coupling zones. Polyglot-adaptive. Heavyweight (writes ARCHITECTURE.md, dispatches parallel agents). Use only when explicitly asked: /map, "generate ARCHITECTURE.md", "map this codebase", OR when another orchestrator skill (e.g. /feature step_refresh_map) needs to dispatch it programmatically.'
 allowed-tools: Glob Grep Read Bash Write Edit Agent
 ---
 
