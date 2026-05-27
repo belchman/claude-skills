@@ -13,7 +13,7 @@ A top-level grouping of skills + commands + hooks distributed as a unit (e.g. `a
 _Avoid_: package, bundle, module.
 
 **Lane**:
-A project-defined scope label (e.g. `Backend`, `Frontend`, `CLI`) that constrains which files a subagent may edit. Defined per-project in `CLAUDE.md`'s `## Lane boundaries` section. Used by `/feature` to inject an allowlist into `/work-issues` via `WORK_ISSUES_PROMPT`.
+A project-defined scope label (e.g. `backend`, `frontend`, `cli`) that constrains which files a subagent may edit. Defined per-project in `CLAUDE.md`'s `## Lane boundaries` section. Used by `/feature` to inject an allowlist into `/work-issues` via `WORK_ISSUES_PROMPT`. Labels are **case-sensitive**: spec H3 headings must match the `## Lane boundaries` label character-for-character — the `allowlist_for` parser does exact-string match against the lane name the orchestrator normalizes to lowercase before lookup.
 _Avoid_: domain, tier, layer.
 
 **Issue**:
@@ -60,7 +60,7 @@ _Avoid_: file list, glob block, manifest.
 
 > **Dev:** "When `/feature` runs, the orchestrator hands an **issue** to `write-a-spec`, then writes a **spec** sidecar next to it?"
 > **Domain expert:** "Yes — and the **spec** must contain at least one **paths block** under an H3 **lane** heading, so the orchestrator can build the **lane preamble** for that lane's `/work-issues` invocation."
-> **Dev:** "What if the feature is backend-only? Does the spec still need a Frontend lane?"
+> **Dev:** "What if the feature is backend-only? Does the spec still need a frontend lane?"
 > **Domain expert:** "No — omit the empty **lane** entirely. The orchestrator's parser treats a missing lane as 'skip'."
 
 ## Flagged ambiguities

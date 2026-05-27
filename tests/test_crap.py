@@ -1,7 +1,7 @@
-"""Characterization tests for plugins/crap/skills/crap/crap.py.
+"""Characterization tests for plugins/agentic-engineering/skills/crap/crap.py.
 
 Run: python3 -m unittest discover tests
-     coverage run --source=plugins/crap/skills/crap -m unittest discover tests
+     coverage run --source=plugins/agentic-engineering/skills/crap -m unittest discover tests
      coverage report
 """
 from __future__ import annotations
@@ -18,10 +18,17 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 HERE = Path(__file__).resolve().parent
-# Import via the fully-qualified package path so mutation tools (e.g. mutmut 3)
-# can map mutants to the tests that exercise them.
-sys.path.insert(0, str(HERE.parent))
-from plugins.crap.skills.crap import crap  # noqa: E402
+# crap.py lives under plugins/agentic-engineering/skills/crap/. The
+# directory name contains a hyphen, so Python can't import it as a package
+# (plugins.agentic-engineering is not a valid module path). We add the
+# skill's own directory to sys.path and import the bare module name. If
+# you want package-aware mutation testing, rename agentic-engineering →
+# agentic_engineering repo-wide first.
+sys.path.insert(
+    0,
+    str(HERE.parent / "plugins" / "agentic-engineering" / "skills" / "crap"),
+)
+import crap  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #

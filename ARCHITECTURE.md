@@ -1,6 +1,6 @@
 ```yaml
-last-mapped: 4295b8f
-mode: full
+last-mapped: 8684bac
+mode: incremental
 generated: 2026-05-27
 ```
 
@@ -117,7 +117,7 @@ graph TD
 | `plugins/agentic-engineering/skills/work-issues/bin/work-issues-lib.sh` | **3 direct** (transitively 4) | `feature-helpers.sh`, `loop.sh`, `once.sh` (and `feature.sh` via helpers) | Changes ripple to every orchestrator entry point; helper-function rename or signature break silently corrupts spec parsing / allowlist enforcement. |
 | `plugins/agentic-engineering/skills/feature/bin/feature-helpers.sh` | 1 direct | `feature.sh` | Single consumer, but transitively critical: owns the state-machine atomicity (`state_read`/`state_write`) and the cross-session lock. A break here strands a `/feature` run mid-pipeline. |
 | `CLAUDE.md` (routing map + Lane boundaries) | **all skills** | every skill reads this on load | Lane labels here are the contract `allowlist_for` consumes. Changing a heading silently invalidates every `*.spec.md` that uses the old label. |
-| `issues/NNN-*.spec.md` H3 lane labels | parsed by | `work-issues-lib.sh::allowlist_for` | Producer = `write-a-spec` skill, consumer = `feature.sh` lane builder. Schema drift = wrong files become editable. |
+| `issues/NNN-*.spec.md` H3 lane labels | parsed by | `work-issues-lib.sh::allowlist_for` | Producer = `write-a-spec` skill, consumer = `feature.sh` lane builder. **Case-sensitive contract**: H3 label must match `CLAUDE.md ## Lane boundaries` char-for-char. `feature.sh:step_lane` normalizes its passed-in lane name to lowercase via `lane_normalize` before calling `allowlist_for`, so the canonical form is whatever case CLAUDE.md uses (lowercase in claude-skills). Schema drift = wrong files become editable, OR worse: empty allowlist + silent skip. |
 | Hooks under `.claude/hooks/` | all sessions in this repo | `format-on-write.sh`, `test-on-stop.sh`, `block-secrets.sh` fire on every matching tool call | A noisy or slow hook degrades every interaction; `block-secrets.sh` is a safety boundary, not a soft warning. |
 
 ### Safe Zones

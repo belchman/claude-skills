@@ -2,7 +2,7 @@
 
 **Source-of-truth for technical decisions:** [`docs/plans/feature-factory.md`](../docs/plans/feature-factory.md) (rev. 2). This PRD captures the user/business framing the plan doesn't.
 
-**Status:** v1 — dogfood-only, no public docs.
+**Status:** v1 shipped 2026-05-27 — all six dogfooding rounds complete (see `../docs/lessons-learned/feature-factory-build.md`). All AFK issues (001-006) merged. PRD moved to `issues/done/prd.md` for archive.
 **Primary user:** engineers who have `agentic-engineering` installed.
 **Validator:** matt (sole v1 user — feeds back via `docs/lessons-learned/feature-factory-build.md`).
 

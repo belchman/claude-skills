@@ -504,6 +504,155 @@ test_full_chain_end_to_end() {
   rm -rf "$sb"
 }
 
+# ---- route_and_loopback: critical findings re-dispatch the lane (VAL-3) -
+
+# Drive route_and_loopback directly by sourcing feature.sh. The bottom of
+# feature.sh has a source-guard (`if [[ "${BASH_SOURCE[0]}" == "${0}" ]]`)
+# so sourcing in a subshell doesn't trigger main. Sets repo_root from
+# FEATURE_REPO_ROOT and loop_sh_cmd from LOOP_SH_CMD; both are honored.
+
+test_route_and_loopback_redispatches_on_critical() {
+  local sb; sb=$(mk_sandbox)
+  local id="0099-test-loopback"
+  local run_dir="$sb/runs/$id"
+  mkdir -p "$run_dir" "$sb/issues" "/tmp/feature-runs/$id"
+
+  # Spec with `### backend` lane (lowercase, matches CLAUDE.md)
+  local spec="$sb/spec.md"
+  cat > "$spec" <<'EOF'
+# spec
+
+### backend
+
+```paths
+src/api/foo.ts
+src/api/bar.ts
+```
+EOF
+
+  # Findings file: one Critical line referencing src/api/foo.ts (which the
+  # spec assigns to backend lane). route_findings will tag it as "backend\t..."
+  local findings="$run_dir/findings.txt"
+  cat > "$findings" <<'EOF'
+src/api/foo.ts:42 — Critical: missing tenant check on insert
+src/api/bar.ts:7 — Minor: docstring could be clearer
+EOF
+
+  # Lane prompt file that route_and_loopback's loop re-invocation expects
+  echo "## Allowlist" > "/tmp/feature-runs/$id/lane-backend.prompt.md"
+  echo "src/api/foo.ts" >> "/tmp/feature-runs/$id/lane-backend.prompt.md"
+
+  # State pointing at both
+  cat > "$run_dir/state.json" <<EOF
+{"id":"$id","brief_path":"","issue_path":"","research_path":"","spec_path":"$spec","rubric_path":"","lanes":{},"validator_findings":"$findings","last_completed_step":"backend_complete","started_at":"2026-05-27T00:00:00Z","updated_at":"2026-05-27T00:00:00Z"}
+EOF
+
+  # Source feature.sh in a subshell + call route_and_loopback
+  (
+    export FEATURE_REPO_ROOT="$sb"
+    export FEATURE_RUNS_DIR="$sb/runs"
+    export LOOP_SH_CMD="$sb/loop-sh-stub"
+    export STUB_OUT_DIR="$sb/stub-out"
+    # shellcheck disable=SC1090
+    source "$feature_sh"
+    route_and_loopback "$id" "$run_dir" "backend"
+  )
+  local rc=$?
+
+  # Critical found → return code 1 (caller re-loops)
+  if [[ "$rc" -eq 1 ]]; then
+    echo "  PASS  route_and_loopback: returns 1 when Critical found in lane"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  route_and_loopback: expected rc=1, got $rc"
+    fail_count=$((fail_count + 1))
+  fi
+
+  # Fix-findings issue written under the sandbox's issues/ dir
+  if [[ -f "$sb/issues/$id-fix-findings.md" ]] \
+     && grep -q 'Critical' "$sb/issues/$id-fix-findings.md"; then
+    echo "  PASS  route_and_loopback: wrote fix-findings issue with Critical content"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  route_and_loopback: fix-findings issue missing or wrong content"
+    fail_count=$((fail_count + 1))
+  fi
+
+  # loop-sh stub was invoked (creates a loop-N.log in stub-out)
+  if compgen -G "$sb/stub-out/loop-*.log" > /dev/null; then
+    echo "  PASS  route_and_loopback: re-invoked loop.sh"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  route_and_loopback: loop.sh stub was NOT invoked"
+    fail_count=$((fail_count + 1))
+  fi
+
+  rm -rf "$sb" "/tmp/feature-runs/$id"
+}
+
+test_route_and_loopback_returns_0_when_no_critical() {
+  local sb; sb=$(mk_sandbox)
+  local id="0098-test-no-critical"
+  local run_dir="$sb/runs/$id"
+  mkdir -p "$run_dir" "$sb/issues" "/tmp/feature-runs/$id"
+
+  local spec="$sb/spec.md"
+  cat > "$spec" <<'EOF'
+# spec
+
+### backend
+
+```paths
+src/api/foo.ts
+```
+EOF
+
+  # Only Minor findings — nothing critical to re-dispatch on
+  local findings="$run_dir/findings.txt"
+  echo 'src/api/foo.ts:42 — Minor: variable name could be clearer' > "$findings"
+
+  cat > "$run_dir/state.json" <<EOF
+{"id":"$id","brief_path":"","issue_path":"","research_path":"","spec_path":"$spec","rubric_path":"","lanes":{},"validator_findings":"$findings","last_completed_step":"backend_complete","started_at":"2026-05-27T00:00:00Z","updated_at":"2026-05-27T00:00:00Z"}
+EOF
+
+  (
+    export FEATURE_REPO_ROOT="$sb"
+    export FEATURE_RUNS_DIR="$sb/runs"
+    export LOOP_SH_CMD="$sb/loop-sh-stub"
+    export STUB_OUT_DIR="$sb/stub-out"
+    # shellcheck disable=SC1090
+    source "$feature_sh"
+    route_and_loopback "$id" "$run_dir" "backend"
+  )
+  local rc=$?
+
+  if [[ "$rc" -eq 0 ]]; then
+    echo "  PASS  route_and_loopback: returns 0 when only Minor findings in lane"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  route_and_loopback: expected rc=0 on no Critical, got $rc"
+    fail_count=$((fail_count + 1))
+  fi
+
+  if [[ ! -f "$sb/issues/$id-fix-findings.md" ]]; then
+    echo "  PASS  route_and_loopback: did NOT write fix-issue when no Critical"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  route_and_loopback: wrote fix-issue despite no Critical"
+    fail_count=$((fail_count + 1))
+  fi
+
+  if ! compgen -G "$sb/stub-out/loop-*.log" > /dev/null; then
+    echo "  PASS  route_and_loopback: did NOT re-invoke loop.sh when no Critical"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  route_and_loopback: re-invoked loop.sh despite no Critical"
+    fail_count=$((fail_count + 1))
+  fi
+
+  rm -rf "$sb" "/tmp/feature-runs/$id"
+}
+
 # ---- Round 4: brief with two-lane shape ("Add /loop --status") ----------
 
 test_full_chain_two_lane_brief() {
@@ -554,6 +703,8 @@ test_continue_accept_story_to_spec
 test_lane_step_emits_lowercase_marker
 test_full_chain_end_to_end
 test_full_chain_two_lane_brief
+test_route_and_loopback_redispatches_on_critical
+test_route_and_loopback_returns_0_when_no_critical
 
 echo ""
 echo "Results: $pass_count passed, $fail_count failed"

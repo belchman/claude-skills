@@ -1,5 +1,7 @@
 # Plan: "Feature Factory" on top of `agentic-engineering`
 
+**Status:** shipped 2026-05-27. All six dogfooding rounds complete; orchestrator + lib helpers + write-a-spec all merged. Retrospective in `docs/lessons-learned/feature-factory-build.md`.
+
 ## Context
 
 We want the 7-agent "software factory" pipeline (Researcher → Story Writer → Spec Writer → Backend Builder → Frontend Builder → Test Verifier → Validator) so a single prompt produces a vertically-sliced feature with three human checkpoints: approve story, approve spec, approve PR.
