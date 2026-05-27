@@ -19,6 +19,13 @@ Invoked when the user wants to create a PRD. Skip steps you judge unnecessary.
 
 5. Write the PRD to `issues/prd.md` using the template below. Create `issues/` if missing. Do NOT submit a GitHub issue or call any external service.
 
+**AFK fallback** (no user available — `/feature` running headlessly, `claude -p` invocation, prior PRD passed in as a file, etc.): steps 1, 3, and 4 are interactive by default but collapse cleanly to a best-guess pass when there's no user. Don't stall waiting for input. Instead:
+
+- Read the brief/source material in full; explore the repo for context (step 2 runs the same).
+- Skip the interview (step 3) and module-confirmation (step 4). Make best-guess decisions on every branch.
+- Add an `## Assumptions` sub-section to the PRD (just before `## Further Notes`) listing each non-trivial decision you made without user input — one bullet per assumption, written as a falsifiable claim (e.g. "Cache directory defaults to `.crap-cache/`" rather than "made some assumptions about caching"). A reviewer or downstream agent reads these to challenge them at the next checkpoint.
+- Keep referenced paths **repo-root-relative** (e.g. `plugins/agentic-engineering/skills/crap/crap.py`, not `crap.py`) — downstream `write-a-spec` consumes them into a lane allowlist that the orchestrator's parser matches literally.
+
 <prd-template>
 
 ## Problem Statement

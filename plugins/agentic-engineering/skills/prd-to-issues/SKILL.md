@@ -29,7 +29,7 @@ Slices are **HITL** (need human interaction — design review, architectural dec
 - Prefer many thin slices over few thick ones
 </vertical-slice-rules>
 
-### 4. Quiz the user
+### 4. Quiz the user (or skip if AFK)
 
 Present a numbered list. For each slice:
 
@@ -46,6 +46,10 @@ Ask:
 - Are HITL/AFK labels right?
 
 Iterate until approved.
+
+**AFK fallback** (no user available — `/feature` running headlessly, `claude -p` invocation, etc.): skip the quiz. Make your best granularity call from the PRD alone, then proceed straight to step 5. In each issue file's `## What to build` section, add a `### Slice rationale` sub-section noting why this slice exists as its own ticket (vs. being folded into a sibling) — a future reviewer or downstream agent reads it to challenge the slicing at the next checkpoint. If you're uncertain between two slicings, write a sibling `QUESTIONS.md` listing the choice you made and the alternative.
+
+**Narrow-feature note:** The "vertical slice through all layers (schema, API, UI, tests)" framing assumes a multi-layer feature. For a single-file CLI flag, a one-script change, or a docs-only update, the layers may collapse to one. Don't force-split a one-issue feature into three issues just to satisfy "many thin slices"; one issue with clear acceptance criteria is the right answer when there's only one layer to cut through. The "deep module + wiring" split is the most common natural 2-issue shape for narrow features.
 
 ### 5. Create the issue files
 
