@@ -27,8 +27,8 @@
     },
     {
       "name": "agentic-engineering",
-      "description": "Composable skills for AI-agentic engineering: PRD → issues → rubrics → autonomous work pipeline, plus TDD, architectural deepening, bug diagnosis, prototyping, domain interrogation (CONTEXT.md/ADR-aware), navigation, evolutionary search, CRAP-score reduction, and ARCHITECTURE.md mapping.",
-      "version": "1.3.0",
+      "description": "Composable skills for AI-agentic engineering: PRD → issues → spec → rubric → autonomous work pipeline, orchestrated end-to-end by /feature (3 human checkpoints, resumable) or run piece-by-piece. Plus TDD, architectural deepening, bug diagnosis, prototyping, domain interrogation (CONTEXT.md/ADR-aware), navigation, evolutionary search, CRAP-score reduction, and ARCHITECTURE.md mapping.",
+      "version": "1.4.0",
       "source": "./plugins/agentic-engineering",
       "author": {
         "name": "belchman"

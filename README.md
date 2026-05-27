@@ -22,7 +22,7 @@ Then install any subset:
 
 ### `agentic-engineering` — the build / review / debug pipeline
 
-Composable skills grouped by **phase of work**: PRD → issues → rubrics → autonomous work, plus design interrogation, TDD, deep-module refactoring, evolutionary search, CRAP reduction, debugging, adversarial review, and ARCHITECTURE.md mapping.
+Composable skills grouped by **phase of work**: PRD → issues → spec → rubric → autonomous work — orchestrated end-to-end by `/feature`, or piece-by-piece by hand. Plus design interrogation, TDD, deep-module refactoring, evolutionary search, CRAP reduction, debugging, adversarial review, and ARCHITECTURE.md mapping.
 
 | Phase | Skills | Purpose |
 | --- | --- | --- |
@@ -36,6 +36,22 @@ Composable skills grouped by **phase of work**: PRD → issues → rubrics → a
 Full per-skill table: [`plugins/agentic-engineering/SKILLS.md`](plugins/agentic-engineering/SKILLS.md). Routing decision tree: [`CLAUDE.md`](CLAUDE.md). Heavyweight skills (`/work-issues`, `/zoom-out`, `/adversarial-review`, `/map`, `/feature`) are slash-only by intent; `/feature` and `/zoom-out` enforce via `disable-model-invocation: true` frontmatter, the others via description prose so `/feature` can dispatch them programmatically.
 
 Convention: skills produce/consume a small set of files (`issues/*.md`, `issues/NNN-*.rubric.md`, `rubrics/*.md`, `CONTEXT.md`, `docs/adr/*.md`, `ARCHITECTURE.md`). Several skills are vendored from [`mattpocock/skills`](https://github.com/mattpocock/skills) (MIT) and [`GAIR-NLP/ASI-Evolve`](https://github.com/GAIR-NLP/ASI-Evolve) (Apache 2.0) — full attribution in [`plugins/agentic-engineering/ATTRIBUTION.md`](plugins/agentic-engineering/ATTRIBUTION.md).
+
+#### Notable: `/feature`
+
+End-to-end orchestrator. One brief in, a vertically-sliced feature out, **three human checkpoints** between (approve story, approve spec+rubric, approve PR). Every step between checkpoints runs in a fresh `claude -p` subprocess so context never collapses. Resumable across terminal close, machine reboot, week-long pauses — state is journaled to `.feature_runs/<id>/state.json` after every step.
+
+```
+/feature "Add invoice reminders for invoices unpaid >7 days"
+# → creates run id, drafts research + story
+# → pauses at Checkpoint 1
+/feature continue <id> --accept      # advance through to next checkpoint
+/feature continue <id> --redo "<feedback>"   # re-run the current step with feedback
+/feature abort <id>                  # give up, release LOCK
+/feature status <id>                 # human-readable state.json
+```
+
+The chain: `/map` refresh → Explore researcher → story → `write-a-spec` → `write-a-rubric` → backend lane via `/work-issues` → `/adversarial-review` validator → frontend lane via `/work-issues` → final `/adversarial-review` → PR. Validator findings tagged Critical re-dispatch the lane that owns the failing path. Slash-only; auto-invocation guarded by `disable-model-invocation: true`. Full chain + failure modes: [`docs/plans/feature-factory.md`](docs/plans/feature-factory.md). Build retrospective: [`docs/lessons-learned/feature-factory-build.md`](docs/lessons-learned/feature-factory-build.md).
 
 #### Notable: `/map`
 
@@ -164,10 +180,11 @@ Schema verified against the [official docs](https://code.claude.com/docs/en/stat
 1. `/write-a-prd` — interview, produce `issues/prd.md`
 2. `/grill-with-docs` — stress-test the PRD against `CONTEXT.md` / `docs/adr/`
 3. `/prd-to-issues` — break PRD into HITL / AFK issues
-4. `/write-a-rubric` — define gradeable "what done looks like" per issue worth it
-5. `/work-issues` (or `bin/loop.sh` for AFK) — autonomously work the queue
+4. `/write-a-spec` — turn each AFK issue into a technical spec (`*.spec.md`) with file-by-file lane allowlists
+5. `/write-a-rubric` — define gradeable "what done looks like" per issue worth it (`*.rubric.md`)
+6. `/work-issues` (or `bin/loop.sh` for AFK) — autonomously work the queue, lane-scoped if a sibling spec is present
 
-Or run the whole chain on a single brief via `/feature` — a thin wrapper that Bash-invokes `plugins/agentic-engineering/skills/feature/bin/feature.sh start "<brief>"` and pauses at 3 checkpoints (approve story, approve spec+rubric, approve PR). Steps in between (map refresh, research, story draft, spec, rubric, backend lane, validator, frontend lane, validator) all run in fresh `claude -p` subprocesses so context never collapses. Resumable across sessions via `.feature_runs/<id>/state.json`. See [`docs/plans/feature-factory.md`](docs/plans/feature-factory.md) for the full chain and failure modes.
+Or run the whole chain on a single brief via `/feature` — see below.
 
 **Quality / review (existing code):**
 

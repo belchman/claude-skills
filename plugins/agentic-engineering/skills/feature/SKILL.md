@@ -24,19 +24,21 @@ For real-feature cases, Bash-invoke without hedging. The whole point is to NOT p
 
 ## Invocation
 
+The script lives at `${CLAUDE_SKILL_DIR}/bin/feature.sh` — Claude Code sets `CLAUDE_SKILL_DIR` to this skill's installed directory regardless of how the plugin was installed (marketplace, symlink, source repo). Invoke it as:
+
 ```bash
-plugins/agentic-engineering/skills/feature/bin/feature.sh start "<the user's brief verbatim>"
+"${CLAUDE_SKILL_DIR}/bin/feature.sh" start "<the user's brief verbatim>"
 ```
 
-The script handles everything from there: creates `.feature_runs/<id>/`, drafts research + story, exits at Checkpoint 1 with explicit resume instructions printed to stdout. Pass those instructions to the user.
+The script handles everything from there: creates `.feature_runs/<id>/` in the **user's current working directory** (not the plugin install dir), drafts research + story, exits at Checkpoint 1 with explicit resume instructions printed to stdout. Pass those instructions to the user.
 
 When the user comes back with approval / feedback:
 
 ```bash
-bin/feature.sh continue <id> --accept             # accept and continue
-bin/feature.sh continue <id> --redo "<feedback>"  # rerun last step with feedback
-bin/feature.sh abort <id>                          # give up; release LOCK
-bin/feature.sh status <id>                         # print state.json in human form
+"${CLAUDE_SKILL_DIR}/bin/feature.sh" continue <id> --accept             # accept and continue
+"${CLAUDE_SKILL_DIR}/bin/feature.sh" continue <id> --redo "<feedback>"  # rerun last step with feedback
+"${CLAUDE_SKILL_DIR}/bin/feature.sh" abort <id>                          # give up; release LOCK
+"${CLAUDE_SKILL_DIR}/bin/feature.sh" status <id>                         # print state.json in human form
 ```
 
 ## What the chain does
@@ -87,6 +89,5 @@ See `docs/plans/feature-factory.md` §G. Summary:
 ## Hard rules
 
 - Slash-only. `disable-model-invocation: true` in frontmatter — the model must not auto-invoke this skill based on conversational context. Only fire on explicit `/feature` (or another orchestrator skill calling it intentionally).
-- Don't replicate the chain in conversation. The whole point of the orchestrator is that each step runs in a fresh `claude -p` context so it doesn't drift. Bash-invoke `bin/feature.sh`.
-- Never modify `bin/feature.sh` / `bin/feature-helpers.sh` mid-chain. If the orchestrator is broken, abort the run, fix the script, start a new run.
-- Don't add Claude as a co-author to any commit `bin/feature.sh` makes via `/work-issues`.
+- Don't replicate the chain in conversation. The whole point of the orchestrator is that each step runs in a fresh `claude -p` context so it doesn't drift. Bash-invoke `"${CLAUDE_SKILL_DIR}/bin/feature.sh"`.
+- Never modify `${CLAUDE_SKILL_DIR}/bin/feature.sh` / `feature-helpers.sh` mid-chain. If the orchestrator is broken, abort the run, fix the script, start a new run.
