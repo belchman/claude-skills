@@ -1,0 +1,45 @@
+{
+  "skill_name": "feature",
+  "evals": [
+    {
+      "id": 1,
+      "name": "smoke-start-to-checkpoint-1",
+      "prompt": "Invoke /feature with a stubbed claude (CLAUDE_CMD points at a shim that creates placeholder artifacts) and a fresh FEATURE_RUNS_DIR. The brief is: 'Add a /version subcommand to crap that prints the git sha of crap.py'. Expected: the orchestrator runs Steps 0-3, exits 0, prints resume instructions naming 'feature.sh continue <id>', and leaves state.json with last_completed_step in {init, map_fresh, research_done, story_drafted}.",
+      "expected_output": "Run dir exists at .feature_runs/<id>/, brief.md present, LOCK file present, state.json valid JSON with 11 required fields, stdout contains 'feature.sh continue <id>', exit 0. No edits outside .feature_runs/<id>/ and issues/<id>.md and issues/research/<id>.md (which the stubbed claude writes via the orchestrator's prompts).",
+      "files": [],
+      "assertions": [
+        {"text": "Run directory created under FEATURE_RUNS_DIR", "type": "filesystem"},
+        {"text": "state.json contains all 11 required fields", "type": "jq"},
+        {"text": "last_completed_step is one of {init, map_fresh, research_done, story_drafted}", "type": "jq"},
+        {"text": "stdout contains 'feature.sh continue <id>'", "type": "stdout"},
+        {"text": "exit code is 0", "type": "exit"}
+      ]
+    },
+    {
+      "id": 2,
+      "name": "checkpoint-1-resume-to-spec-invalid",
+      "prompt": "After eval 1 reaches Checkpoint 1, invoke feature.sh continue <id> --accept. The stubbed claude is replaced with one that returns a spec without any ```paths fenced blocks (simulates write-a-spec producing malformed output). Expected: the orchestrator advances to Step 4, detects the invalid spec, sets last_completed_step = 'spec_invalid', exits non-zero. State.json shows the failure.",
+      "expected_output": "state.json's last_completed_step equals 'spec_invalid', exit code non-zero, stderr names 'paths' AND 'H3' AND 'lane' (the expected format).",
+      "files": [],
+      "assertions": [
+        {"text": "last_completed_step equals 'spec_invalid' (SP-1)", "type": "jq"},
+        {"text": "exit code non-zero (SP-1)", "type": "exit"},
+        {"text": "stderr mentions paths, H3, lane (SP-2)", "type": "stderr"}
+      ]
+    },
+    {
+      "id": 3,
+      "name": "out-of-lane-edit-detection",
+      "prompt": "Invoke feature.sh through the full chain with a stub claude that produces a valid spec with Backend allowlist ['src/api/foo.ts', 'src/services/foo.ts']. Then stub the lane build (LOOP_SH_CMD) to record what files it would edit. Verify the orchestrator constructs a lane preamble at /tmp/feature-runs/<id>/lane-Backend.prompt.md containing the allowlist, and invokes loop.sh with WORK_ISSUES_PROMPT pointing at it. Asserts no out-of-lane edits would happen (lane preamble enforces).",
+      "expected_output": "Lane prompt file at /tmp/feature-runs/<id>/lane-Backend.prompt.md exists, contains both 'src/api/foo.ts' and 'src/services/foo.ts' under an ## Allowlist heading, and contains the body of work-issues/SKILL.md (no leading frontmatter ---). loop.sh stub captures WORK_ISSUES_PROMPT pointing at the lane prompt file. No allowlist-violating edits attempted.",
+      "files": [],
+      "assertions": [
+        {"text": "Lane prompt file exists at the expected path (LN-1)", "type": "filesystem"},
+        {"text": "Lane prompt contains both allowlist paths (LN-2)", "type": "grep"},
+        {"text": "Lane prompt body does NOT start with --- frontmatter (LN-2)", "type": "grep"},
+        {"text": "loop.sh stub captured WORK_ISSUES_PROMPT env var (LN-3)", "type": "env-capture"},
+        {"text": "No out-of-lane file paths recorded in any captured edit (EV-4)", "type": "allowlist-check"}
+      ]
+    }
+  ]
+}
