@@ -15,15 +15,17 @@ This file is the *routing* map — "which phase am I in, and what comes next?"
 ```
 nothing yet                  → write-a-prd       → issues/prd.md
 issues/prd.md                → prd-to-issues     → issues/NNN-*.md (HITL or AFK)
-issues/NNN-*.md              → write-a-rubric    → issues/NNN-*.rubric.md  (optional sidecar)
-issues/NNN-*.md (AFK)        → work-issues       → commits + issues/done/NNN-*.md (rubric travels)
+issues/NNN-*.md              → write-a-spec      → issues/NNN-*.spec.md   (optional sidecar; required for /feature lane scoping)
+issues/NNN-*.md              → write-a-rubric    → issues/NNN-*.rubric.md (optional sidecar)
+issues/NNN-*.md (AFK)        → work-issues       → commits + issues/done/NNN-*.md (sidecars travel)
+brief                        → /feature          → runs the whole chain end-to-end with 3 checkpoints (resumable)
 ```
 
 ## Phase map
 
 | Phase | Skills | What's it for |
 | --- | --- | --- |
-| **1. Pipeline** | `write-a-prd`, `prd-to-issues`, `write-a-rubric`, `/work-issues` | Brief → PRD → issues → autonomous work. |
+| **1. Pipeline** | `write-a-prd`, `prd-to-issues`, `write-a-spec`, `write-a-rubric`, `/work-issues`, `/feature` | Brief → PRD → issues → spec → autonomous work, or `/feature` for the whole chain on one brief. |
 | **2. Design** | `grill-with-docs`, `grill-me`, `prototype` | Stress-test a plan before code changes. |
 | **3. Implement** | `tdd`, `improve-codebase-architecture`, `evolve` | Move the code itself. |
 | **4. Debug** | `diagnose`, `/zoom-out` | Find and fix what's broken. |

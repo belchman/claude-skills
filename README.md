@@ -26,14 +26,14 @@ Composable skills grouped by **phase of work**: PRD → issues → rubrics → a
 
 | Phase | Skills | Purpose |
 | --- | --- | --- |
-| **1. Pipeline** | `write-a-prd`, `prd-to-issues`, `write-a-rubric`, `/work-issues` | Brief → PRD → issues → rubrics → autonomous work |
+| **1. Pipeline** | `write-a-prd`, `prd-to-issues`, `write-a-spec`, `write-a-rubric`, `/work-issues`, `/feature` | Brief → PRD → issues → spec → autonomous work, or `/feature` to orchestrate the whole chain on one brief |
 | **2. Design** | `grill-with-docs`, `grill-me`, `prototype` | Stress-test plans before any code changes |
 | **3. Implement** | `tdd`, `improve-codebase-architecture`, `evolve` | Move the code itself |
 | **4. Debug** | `diagnose`, `/zoom-out` | Find and fix what's broken |
 | **5. Review** | `/adversarial-review`, `crap` | Audit existing code for gaps and risk |
 | **6. Document** | `/map` | Keep `ARCHITECTURE.md` current |
 
-Full per-skill table: [`plugins/agentic-engineering/SKILLS.md`](plugins/agentic-engineering/SKILLS.md). Routing decision tree: [`CLAUDE.md`](CLAUDE.md). Slash-only skills (`/work-issues`, `/zoom-out`, `/adversarial-review`, `/map`) have `disable-model-invocation: true` and only fire on explicit invocation.
+Full per-skill table: [`plugins/agentic-engineering/SKILLS.md`](plugins/agentic-engineering/SKILLS.md). Routing decision tree: [`CLAUDE.md`](CLAUDE.md). Heavyweight skills (`/work-issues`, `/zoom-out`, `/adversarial-review`, `/map`, `/feature`) are slash-only by intent; `/feature` and `/zoom-out` enforce via `disable-model-invocation: true` frontmatter, the others via description prose so `/feature` can dispatch them programmatically.
 
 Convention: skills produce/consume a small set of files (`issues/*.md`, `issues/NNN-*.rubric.md`, `rubrics/*.md`, `CONTEXT.md`, `docs/adr/*.md`, `ARCHITECTURE.md`). Several skills are vendored from [`mattpocock/skills`](https://github.com/mattpocock/skills) (MIT) and [`GAIR-NLP/ASI-Evolve`](https://github.com/GAIR-NLP/ASI-Evolve) (Apache 2.0) — full attribution in [`plugins/agentic-engineering/ATTRIBUTION.md`](plugins/agentic-engineering/ATTRIBUTION.md).
 
