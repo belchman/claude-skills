@@ -45,7 +45,7 @@ Issue tags. AFK = "away from keyboard" — `/work-issues` can pick it up autonom
 _Avoid_: auto / manual, headless / interactive.
 
 **Paths block**:
-A fenced code block tagged `paths` inside a spec. One literal file path per line; no globs (v1). Lives under an H3 lane heading. Parsed by `bin/feature-helpers.sh::allowlist_for` to derive the lane allowlist.
+A fenced code block tagged `paths` inside a spec. One literal file path per line; no globs / no brace expansion (v1). Lives under an H3 lane heading whose label is a bareword (no markdown styling) matching `CLAUDE.md`'s `## Lane boundaries`. Parsed by `work-issues-lib.sh::allowlist_for` to derive the lane allowlist (this is the canonical reference — earlier plan/ADR drafts called it `feature-helpers.sh::allowlist_for`, but the function ships from `work-issues-lib.sh` and is sourced by whichever orchestrator needs it).
 _Avoid_: file list, glob block, manifest.
 
 ## Relationships

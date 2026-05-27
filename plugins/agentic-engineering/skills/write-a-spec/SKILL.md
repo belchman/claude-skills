@@ -8,9 +8,9 @@ description: 'Turn an approved story (issues/NNN-*.md) plus an optional research
 A **spec** is the technical-brief sidecar to an issue. It sits between the approved story (what the user wants) and the lane builders (`/work-issues --lane …` via `/feature`), and it must answer two questions:
 
 1. **What changes** — data model, API shape, files touched per lane, tests required, risks.
-2. **Where the lane allowlists come from** — the spec's `File-by-file change list` is the *source* `bin/feature.sh::allowlist_for` parses to scope each lane's `/work-issues` invocation.
+2. **Where the lane allowlists come from** — the spec's `File-by-file change list` is the *source* `work-issues-lib.sh::allowlist_for` parses (via `/feature`'s orchestrator) to scope each lane's `/work-issues` invocation.
 
-A vague spec produces a confused builder and a broken lane scope. This skill exists to keep specs sharp enough that `bin/feature.sh` can parse the allowlist deterministically and a builder can implement without re-asking.
+A vague spec produces a confused builder and a broken lane scope. This skill exists to keep specs sharp enough that the parser can deterministically extract per-lane allowlists and a builder can implement without re-asking.
 
 Source-of-truth for the protocol: [`docs/plans/feature-factory.md`](../../../../docs/plans/feature-factory.md) §C ("Spec → allowlist format") + ADR [`0001-fenced-paths-blocks-for-lane-allowlists`](../../../../docs/adr/0001-fenced-paths-blocks-for-lane-allowlists.md). Project glossary: [`CONTEXT.md`](../../../../CONTEXT.md).
 
@@ -42,6 +42,10 @@ The output is a **new file**. The skill does **not** modify the source issue, th
 Before drafting the `File-by-file change list`, read `CLAUDE.md` and look for a `## Lane boundaries` section. That section is the canonical lane vocabulary for the project (e.g. `Backend`, `Frontend`, `CLI`, `Worker`). Lane H3 headings in the spec **MUST** match labels defined there — the orchestrator's parser compares H3 text to allowlist names character-for-character.
 
 If `CLAUDE.md` has no `## Lane boundaries` section, ask the user once for the project's lane vocabulary, then proceed. Don't invent lanes silently.
+
+**AFK fallback** (no user available — `/feature` running headlessly, `claude -p` invocation, etc.): instead of stalling on "ask the user," write a sibling `issues/NNN-<slug>.QUESTIONS.md` file listing the lane-vocabulary question explicitly. Use a best-guess lane vocabulary derived from top-level directory names in the repo (e.g. `src/api` → `Backend`, `web/` → `Frontend`, `cmd/` → `CLI`) AND clearly mark this guess in the spec's Risks section: "Lane vocabulary inferred from top-level dirs; CLAUDE.md `## Lane boundaries` is missing. Confirm before any lane build runs."
+
+If `CLAUDE.md` is missing entirely, treat it the same as "has no Lane boundaries section" — write `QUESTIONS.md`, infer from top-level dirs, mark in Risks.
 
 ## Single-lane handling
 
@@ -134,13 +138,20 @@ _If genuinely no concerns: `_N/A — <one-sentence reason>_`._ Most features hav
 
 ## Paths block convention
 
-The `File-by-file change list` section's lane subsections must follow this format strictly — `bin/feature.sh::allowlist_for` parses it character-by-character:
+The `File-by-file change list` section's lane subsections must follow this format strictly — `work-issues-lib.sh::allowlist_for` parses it character-by-character. The parser fails silently (empty output + exit 0) on most mismatches, treating them as "lane not found / skip" — so a typo or formatting deviation produces a silently-skipped lane, not an error:
 
-- **Lane labels** are H3 headings (`### <Label>`). The label text must match a name defined in `CLAUDE.md`'s `## Lane boundaries`.
-- **Paths blocks** are fenced code blocks whose info string is literally `paths` (lowercase, no attributes).
-- **Each line inside a `paths` block is one literal file path** — no globs (`*`, `**`, `?`, `[`), no brace expansion, no shell metacharacters.
-- **A path may appear in only one lane** within a single spec. The parser fails loud on cross-lane duplicates (per plan §C and ADR 0001).
+- **Lane labels** are H3 headings of the form `### <Bareword>` — a single bareword from `CLAUDE.md`'s `## Lane boundaries`, with no markdown styling. Specifically:
+  - **No bold**: `### **Backend**` is wrong; parser sees lane name `**Backend**`, never matches lookup for `Backend`.
+  - **No links**: `### [Backend](https://...)` is wrong for the same reason.
+  - **No trailing `###`** (CommonMark ATX-close): `### Backend ###` puts ` ###` inside the lane name. Use `### Backend` only.
+  - **No leading indentation**: `   ### Backend` is not recognised as an H3 by the parser.
+  - **No parenthetical annotations**: `### Backend (cron)` becomes lane name `Backend (cron)` — fails the lookup.
+  - Trailing whitespace IS tolerated (parser trims) — but leading whitespace anywhere in the heading is not.
+- **Paths blocks** are fenced code blocks whose info string is literally `paths` (lowercase, no attributes). Variants the parser silently rejects: `\`\`\`paths bash`, `\`\`\`Paths`, `\`\`\`paths-list`, `~~~paths` (tilde fence), indented fences.
+- **Each line inside a `paths` block is one literal file path** — no globs (`*`, `**`, `?`, `[`), no brace expansion (`{a,b}`), no shell metacharacters. The parser rejects all of these with exit 1 and stderr names the offender.
+- **A path may appear in only one lane** within a single spec. `route_findings` fails loud on cross-lane duplicates (per plan §C and ADR 0001).
 - **Lane sub-sections appear directly under the `File-by-file change list` H2** with their `paths` block following (blank lines OK, prose OK between H3 and fence).
+- **Self-check before writing**: after drafting, run `grep -c '^```paths$' <spec>` — the count MUST equal the number of lanes you intended. If you intended 2 lanes but the count is 1, you have a fence typo. Run `grep '^### ' <spec>` — every line must be exactly `### <BarewordLabel>` with no styling.
 
 ### Worked example
 

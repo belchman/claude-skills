@@ -13,7 +13,7 @@
         },
         {
           "path": "CLAUDE.md",
-          "content": "# Project conventions\n\n## Lane boundaries\n\n- **Backend** — `src/api/**`, `src/services/**`, `src/jobs/**`, `tests/services/**`\n- **Frontend** — `web/components/**`, `web/hooks/**`, `tests/components/**`\n"
+          "content": "# Project conventions\n\n## Lane boundaries\n\n- Backend — `src/api/**`, `src/services/**`, `src/jobs/**`, `tests/services/**`\n- Frontend — `web/components/**`, `web/hooks/**`, `tests/components/**`\n"
         }
       ]
     },
@@ -29,7 +29,7 @@
         },
         {
           "path": "CLAUDE.md",
-          "content": "# Project conventions\n\n## Lane boundaries\n\n- **Backend** — `src/search/**`, `tests/search/**`\n- **Frontend** — `web/search/**`, `tests/web/search/**`\n"
+          "content": "# Project conventions\n\n## Lane boundaries\n\n- Backend — `src/search/**`, `tests/search/**`\n- Frontend — `web/search/**`, `tests/web/search/**`\n"
         }
       ]
     },
@@ -45,7 +45,7 @@
         },
         {
           "path": "CLAUDE.md",
-          "content": "# Project conventions\n\n## Lane boundaries\n\n- **CLI** — `plugins/agentic-engineering/skills/crap/crap.py`, `tests/test_crap.py`\n- **Backend** — `plugins/agentic-engineering/skills/crap/server/**` (future API)\n"
+          "content": "# Project conventions\n\n## Lane boundaries\n\n- CLI — `plugins/agentic-engineering/skills/crap/crap.py`, `tests/test_crap.py`\n- Backend — `plugins/agentic-engineering/skills/crap/server/**` (future API)\n"
         }
       ]
     },

@@ -92,13 +92,13 @@ allowlist_for() {
       if (length($0)) print
     }
   ' "$spec")
-  # Reject globs / wildcards per plan §C ("No globs in v1") + ADR 0001.
+  # Reject globs / wildcards / brace expansion per plan §C ("No globs in v1") + ADR 0001.
   local p
   while IFS= read -r p; do
     [[ -z "$p" ]] && continue
     case "$p" in
-      *'*'*|*'?'*|*'['*)
-        echo "allowlist_for: glob/wildcard not allowed in v1 paths block: '$p'" >&2
+      *'*'*|*'?'*|*'['*|*'{'*|*'}'*)
+        echo "allowlist_for: glob/wildcard/brace not allowed in v1 paths block: '$p'" >&2
         return 1
         ;;
     esac

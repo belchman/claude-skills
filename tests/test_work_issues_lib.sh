@@ -466,6 +466,32 @@ EOF
   assert_eq "route_findings: src/api.ts-bak NOT misclassified as src/api.ts" "$want" "$got"
 }
 
+# CRITICAL (Round 3b adversarial review): brace expansion {foo,bar} must be
+# rejected as a glob — SKILL.md anti-patterns forbids it; impl must enforce.
+test_allowlist_for_rejects_brace_expansion() {
+  # shellcheck disable=SC1090
+  source "$lib"
+  local spec err_log
+  spec=$(mktemp); err_log=$(mktemp)
+  cat > "$spec" <<'EOF'
+### Backend
+```paths
+src/{api,svc}/foo.ts
+```
+EOF
+  local exit_code err
+  allowlist_for "$spec" Backend >/dev/null 2>"$err_log"; exit_code=$?
+  err=$(cat "$err_log")
+  rm -f "$spec" "$err_log"
+  if (( exit_code == 0 )); then
+    echo "  FAIL  allowlist_for: brace expansion should be rejected (got exit 0)"
+    fail_count=$((fail_count + 1))
+  else
+    echo "  PASS  allowlist_for: rejects brace expansion (exit $exit_code)"
+    pass_count=$((pass_count + 1))
+  fi
+}
+
 # IMPORTANT (config #5 propagation): route_findings must propagate allowlist_for's
 # non-zero exit (e.g. when allowlist contains globs and gets rejected).
 test_route_findings_propagates_allowlist_for_failure() {
@@ -520,6 +546,7 @@ test_route_findings_handles_missing_trailing_newline
 test_allowlist_for_rejects_globs
 test_allowlist_for_trims_whitespace
 test_route_findings_does_not_match_adjacent_filename
+test_allowlist_for_rejects_brace_expansion
 test_route_findings_propagates_allowlist_for_failure
 
 echo ""
