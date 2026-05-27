@@ -135,3 +135,72 @@ Round 3 will need `/work-issues` to autonomously work each issue. Per Round 0 pr
 Grilling found one critical rubric bug + 4 design ambiguities in 5 questions. Without this round, Round 3 would have produced a broken `write-a-spec` skill. The lazy-CONTEXT.md and lazy-ADR pattern proved its value — both files now exist as durable references for future rounds.
 
 Ready to proceed to Round 3 (build each piece via `/work-issues`) — AFTER applying the pre-Round-3 fix above.
+
+---
+
+## Round 3 — build each piece via /work-issues
+
+**Date:** 2026-05-27
+
+**Skills dogfooded (heavily):** `/work-issues` (5 iterations: 004, 001, 002, 003, 005), `tdd` (RED-GREEN cycles for shell tests), `/adversarial-review` (parallel 3-reviewer pass after every issue), `skill-creator` (5-iteration eval workflow on /feature). Plus implicit reuse of `write-a-rubric` (referenced; not re-invoked).
+
+**Final state:** All 5 unblocked AFK issues shipped (001 write-a-spec, 002 adversarial-review env vars, 003 work-issues lane paragraph, 004 lib helpers, 005 /feature orchestrator). 70 shell tests across 3 suites GREEN. 8 commits in this round: 5 initial implementations + 3 adversarial-review fix-ups + 1 skill-creator-driven SKILL.md revision on /feature.
+
+### Pattern that emerged: "rubric < contract"
+
+Every single big-issue commit (001, 004, 005) had its initial implementation pass the rubric perfectly, then adversarial review found 2-6 CRITICAL real bugs the rubric didn't anticipate. The pattern is consistent:
+
+| Issue | Initial commit | Rubric coverage | Adversarial findings |
+|---|---|---|---|
+| 004 lib helpers | b07cf00 | All 23 criteria | 2 CRITICAL (sort instability, stderr leak) |
+| 001 write-a-spec | 31c6978 | All 40+ criteria | 4 CRITICAL (parser path, H3 silent failure, brace expansion, no AFK fallback) |
+| 005 /feature | 0d14273 | All 32 criteria | 11+ CRITICAL (case-wrong markers, route_findings never called, lane chain ignores failures, atomic state, --redo no-op, infinite loop, empty allowlist, etc.) |
+
+The rubric is a STRUCTURAL FLOOR ("these specific things must exist"). It does not capture the CONTRACT ("the thing must actually work as designed"). Adversarial review catches the contract gap.
+
+**Action for Round 6:** consider updating `write-a-rubric` to suggest more contract-level criteria. Or add a step to `/work-issues` that automatically dispatches `/adversarial-review --diff` after every commit. The pattern is consistent enough across 3 issues to bake it into the pipeline.
+
+### Skill-creator eval workflow (5 iterations on /feature)
+
+Per user request, ran 5 iterations of skill-creator eval against /feature SKILL.md to verify "exactly what we want."
+
+**Iter-1**: 3 easy prompts (trivial CLI, backend feature, fullstack) → 3/3 with-skill Bash-invoked. Skill works on easy cases. But the prompts were too easy to find issues.
+
+**Iter-2**: 3 harder prompts (context-loaded mid-conversation, user pushback "do it inline", deferred brief on message 2):
+- Context-loaded: Bash-invoked + added "scope sanity" caveat unprompted
+- User pushback: deferred to user, edited inline (correct per CLAUDE.md user-override, but exposed gap)
+- Deferred brief: asked then Bash-invoked
+- **Gap found**: SKILL.md was too absolute about Bash-invoking. The chain has real overhead (3 checkpoints, 6 subagent dispatches) that's overkill for trivial work. SKILL.md didn't acknowledge this.
+
+**Iter-3** (after revision adding "When this skill is the right tool" section + "Don't bureaucratize trivial work" guidance): 3/3 correctly suggested direct path for trivial prompts, handled user override cleanly.
+
+**Iter-4** (mixed trivial / substantive / borderline): 3/3 — scope discrimination works. Substantive case correctly Bash-invoked without hedging; trivial case correctly suggested direct; borderline case offered ask+escape hatch.
+
+**Iter-5** (edge cases — vague brief, multi-feature pack, question disguised as feature): 3/3 — asked clarification on vague, suggested splitting on multi-pack, offered three forks on question.
+
+**Net: 14/15 correct on first invocation; 15/15 after one SKILL.md revision.** The skill is genuinely robust across the realistic prompt space.
+
+### Skill / process changes worth landing
+
+Captured for Round 6:
+1. **rubric < contract pattern** — investigate whether write-a-rubric should add contract-level prompts, or whether /work-issues should auto-dispatch /adversarial-review --diff after every commit.
+2. **disable-model-invocation: true removal as a pattern** — Round 0 removed it from /adversarial-review; Round 2 from /work-issues; Round 3 LEFT it on /feature (correctly, since the user-facing UX is /feature being a slash-only trigger). The decision tree for when to remove the flag is: "remove if another orchestrator skill needs to dispatch this programmatically via Skill tool."
+3. **5-iteration skill-creator eval is high-value for SKILL.md prompt quality** — found a real gap in iter-2 that would have shipped without it. Worth budgeting eval rounds for every new heavyweight skill.
+4. **State machine review pattern** — adversarial review on /feature found 9 of 13 state values had no continue --accept arm. This is a CLASS of bug for any state-machine orchestrator. Add to the adversarial-review skill's coverage-reviewer agent: "list state values referenced in the code; verify every value has a handler."
+
+### Pre-Round-4 status check
+
+Round 4 is the self-test: run /feature on a trivial in-repo brief end-to-end. Pre-checks:
+- ✅ All 5 issues merged
+- ✅ /feature SKILL.md handles scope discrimination
+- ✅ 70 tests across 3 suites GREEN
+- ✅ Symlink in place at ~/.claude/skills/feature → repo skill dir
+- ⚠️ Issue 006 (routing docs) still open — blocks discoverability via README/SKILLS.md but not /feature's own behavior
+- ⚠️ /map skill still has disable-model-invocation: true — /feature's step_refresh_map would fail when invoked from a fresh claude -p context with no /map skill loaded. Need to either: (a) remove disable-model-invocation from /map per the established pattern, OR (b) skip the /map step in /feature when ARCHITECTURE.md is already present (which feature.sh already does)
+- ⚠️ /work-issues's bin/loop.sh dispatches `claude` (not `claude -p`). When called from /feature's step_lane, it will spawn a sub-claude that needs to also load all the right skills. Risk: skill cascade depth might exceed practical limits
+
+### Round 3 verdict
+
+The dogfooding loop produced a working factory in 8 commits over 5 substantive iterations. The adversarial-review-after-every-commit pattern caught 17+ critical bugs across the round; without it, /feature would have shipped with a fundamentally broken state machine. The 5-iteration skill-creator eval pattern added one substantial SKILL.md revision (scope discrimination) the rubric didn't capture.
+
+Ready to proceed to Round 4 (self-test /feature on a trivial in-repo brief) — after considering whether to address the /map disable-model-invocation issue first.

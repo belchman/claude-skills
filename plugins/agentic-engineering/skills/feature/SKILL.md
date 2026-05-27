@@ -8,6 +8,20 @@ disable-model-invocation: true
 
 `/feature` is a thin user-facing wrapper around `bin/feature.sh`. When the user types `/feature "<brief>"`, the only thing you (Claude) need to do is **Bash-invoke** the script and surface its stdout to the user. Do NOT try to replicate the chain in conversation — that's exactly what the orchestrator exists to prevent (collapsed-context drift, see PRD).
 
+## When this skill is the right tool
+
+The chain has real overhead — three human checkpoints, six subagent dispatches, multiple file artifacts (`issues/NNN-*.md`, `*.spec.md`, `*.rubric.md`, `*.research.md`). It pays for itself when the work is **a real feature**: at least one data-model change, API change, or UI change, with multiple files touched across lanes, where catching architectural assumptions at the spec stage prevents downstream rework.
+
+The chain is **overkill** when the work is:
+- A one-file fix (typo, bug in a single function, dependency bump).
+- A trivial CLI flag or subcommand (10-50 lines, no schema, no API contract).
+- A doc edit or README sync.
+- A test-only change.
+
+For overkill cases, surface that to the user before Bash-invoking. Suggest the direct path ("I can edit `crap.py` directly — that's ~10 lines"). If the user confirms "just do it inline" — or if they were explicit upfront with phrasing like "just do this inline, the orchestrator is overkill" — comply per the standard user-instructions-override-defaults rule. Don't bureaucratize trivial work.
+
+For real-feature cases, Bash-invoke without hedging. The whole point is to NOT pre-design in the calling context.
+
 ## Invocation
 
 ```bash
