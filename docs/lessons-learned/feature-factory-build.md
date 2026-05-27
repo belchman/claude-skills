@@ -204,3 +204,40 @@ Round 4 is the self-test: run /feature on a trivial in-repo brief end-to-end. Pr
 The dogfooding loop produced a working factory in 8 commits over 5 substantive iterations. The adversarial-review-after-every-commit pattern caught 17+ critical bugs across the round; without it, /feature would have shipped with a fundamentally broken state machine. The 5-iteration skill-creator eval pattern added one substantial SKILL.md revision (scope discrimination) the rubric didn't capture.
 
 Ready to proceed to Round 4 (self-test /feature on a trivial in-repo brief) — after considering whether to address the /map disable-model-invocation issue first.
+
+---
+
+## Round 4 — `/feature` self-test (stubbed end-to-end)
+
+**Date:** 2026-05-27
+
+**Skills dogfooded:** `/feature` itself (stubbed), the orchestrator's own integration test suite.
+
+**Final state:** Two new full-chain tests added to `tests/test_feature_orchestrator.sh` (`test_full_chain_end_to_end`, `test_full_chain_two_lane_brief`); 30/30 GREEN. New env override `FEATURE_REPO_ROOT` documented in `feature/SKILL.md`. 12 leaked test artifacts cleaned out of `issues/` and `issues/research/`.
+
+### What worked
+
+- **Full-chain test caught the implicit-checkpoint discrepancy.** Documenting via the test was easier than reading the source — by structurally asserting `last_completed_step` at each step (`rubric_drafted` → `backend_validated` → `validated` → `done`), the actual user-facing flow became visible: 5 invocations (`start` + 4 × `continue --accept`), not 4. The SKILL.md / README.md / CLAUDE.md description "3 checkpoints" is correct (only CP1, CP2, CP3 paged) but the user must invoke `continue` between backend and frontend lanes too. That "between-lanes gate" is a silent pause point.
+- **Stub claude was sufficient for chain verification.** No real Anthropic API call was needed — the stub creates valid spec (with `### Backend` H3 + `paths` fenced block) and rubric artifacts, and `loop.sh` stub exits 0. This caught real orchestration bugs without burning tokens.
+
+### What didn't work / friction encountered
+
+- **Test artifacts leaked into the real repo's `issues/` directory.** `feature.sh` computed `repo_root` from `git rev-parse --show-toplevel`, so even with `FEATURE_RUNS_DIR` sandboxed, `step_story` / `step_spec` / `step_rubric` / `step_researcher` wrote to `$repo_root/issues/`, polluting the actual repo. Found 12 leaked files from prior test runs (`0001-feature-lane.spec.md`, `0001-add-version-subcommand-to-crap-that-prin.rubric.md`, etc.) plus an entire `issues/research/` subtree that didn't exist before tests.
+  - **FIXED in this round:** added `FEATURE_REPO_ROOT` env override to `feature.sh` (line 36); test harness sets it to `$sb`; documented in `feature/SKILL.md` under "Env overrides".
+  - **Cleanup performed:** `rm -f issues/0001-*` and `rmdir issues/research`.
+  - **Class of bug:** any orchestrator that runs in a sandbox MUST sandbox every path the wrapped script writes to. `FEATURE_RUNS_DIR` only sandboxed the run-state dir; everything else (issue/spec/rubric/research outputs) leaked. The rubric for issue 005 didn't catch this — the orchestrator was "correct" w.r.t. the spec, but the spec didn't think about test isolation.
+- **Implicit fourth checkpoint surfaced.** The chain is documented as "3 checkpoints" but in practice the user is paged 4 times. The pause between backend and frontend lanes exists (state = `backend_validated`, message "Run continue to start the Frontend lane") but isn't called "Checkpoint" — yet the user must take an action to proceed. This is a UX inconsistency: either the message should say "Checkpoint 2.5: backend done, OK to start frontend?" or the chain should auto-continue.
+  - **Not fixed in this round.** Decision deferred to Round 6 — needs a design call: is the pause intentional (user reviews backend's commit before frontend touches the codebase) or accidental (state machine boundary that should be transparent)?
+- **`tests/test_crap.py` pre-existing failure.** Module collection error: `ModuleNotFoundError: No module named 'plugins.crap'`. Confirmed not caused by this round's changes (`git stash` + rerun = same error). Out of scope for Round 4; flag for separate cleanup.
+
+### Skill / process changes worth landing
+
+1. **`FEATURE_REPO_ROOT` env override** — landed. Documented in `feature/SKILL.md`.
+2. **Implicit-fourth-checkpoint UX** — Round 6 candidate. Options: (a) collapse rubric_drafted → frontend_validated into one continue (validator runs after both lanes); (b) re-label the message as "Checkpoint 2.5"; (c) leave as-is and document it as "intentional inter-lane pause" in the SKILL.md `## What the chain does` section. Need a design call before committing.
+3. **Sandbox-everything-on-FEATURE_REPO_ROOT rule** — the lesson "sandbox the run dir is not enough" applies to any orchestrator. Worth a one-line addition to a future "writing test-friendly shell orchestrators" reference in the `tdd` or `improve-codebase-architecture` skill.
+
+### Round 4 verdict
+
+The orchestrator works end-to-end with stubs. The test artifact leakage was a real bug surfaced only by trying to use the thing on its own repo — pure unit tests would never have caught it (since they don't read the real `issues/` directory). The "dogfood by self-testing" pattern earned its keep here. The "3 vs 4 checkpoints" UX issue is the only open item for Round 6.
+
+Ready to proceed to Round 5 (run `/map --section deps` + `crap --full` on shell + final SKILLS.md/CLAUDE.md/README sweep).

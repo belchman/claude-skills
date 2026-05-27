@@ -107,6 +107,7 @@ run_in_sb() {
   CLAUDE_CMD="$sb/claude-stub" \
   LOOP_SH_CMD="$sb/loop-sh-stub" \
   FEATURE_RUNS_DIR="$sb/runs" \
+  FEATURE_REPO_ROOT="$sb" \
     bash "$feature_sh" "$@"
 }
 
@@ -380,6 +381,130 @@ test_lane_step_emits_lowercase_marker() {
   fi
 }
 
+# ---- Round 4: full-chain end-to-end with stub claude/loop ----------------
+#
+# Drives the orchestrator from `start` to `done` through every state
+# transition. Smoke-tests the same brief shape the dogfooding plan names
+# (single-lane feature: "Add /version subcommand to crap").
+#
+# Continue invocations required: 1 (start) + 4 (continue --accept) = 5.
+# Final state.last_completed_step == "done"; run dir renamed to <id>.done.
+
+test_full_chain_end_to_end() {
+  local sb; sb=$(mk_sandbox)
+  run_in_sb "$sb" start "Add /version subcommand to crap that prints the script sha" > /dev/null 2>&1
+  local id
+  id=$(basename "$(find "$sb/runs" -maxdepth 1 -mindepth 1 -type d | head -1)")
+
+  # CP1 → CP2 (spec + rubric)
+  run_in_sb "$sb" continue "$id" --accept > /dev/null 2>&1
+  local step1
+  step1=$(jq -r .last_completed_step "$sb/runs/$id/state.json" 2>/dev/null)
+  if [[ "$step1" == "rubric_drafted" ]]; then
+    echo "  PASS  full-chain: continue #1 → rubric_drafted (CP2)"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  full-chain: continue #1 expected rubric_drafted, got '$step1'"
+    fail_count=$((fail_count + 1))
+    rm -rf "$sb"; return
+  fi
+
+  # CP2 → backend_validated (intermediate; the README/PRD/CLAUDE.md call this
+  # an "implicit checkpoint" — the user could abort before letting frontend
+  # touch anything, but it's not paged with a CP3-style message).
+  run_in_sb "$sb" continue "$id" --accept > /dev/null 2>&1
+  local step2
+  step2=$(jq -r .last_completed_step "$sb/runs/$id/state.json" 2>/dev/null)
+  if [[ "$step2" == "backend_validated" ]]; then
+    echo "  PASS  full-chain: continue #2 → backend_validated (between-lanes gate)"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  full-chain: continue #2 expected backend_validated, got '$step2'"
+    fail_count=$((fail_count + 1))
+    rm -rf "$sb"; return
+  fi
+
+  # backend_validated → validated (CP3)
+  run_in_sb "$sb" continue "$id" --accept > /dev/null 2>&1
+  local step3
+  step3=$(jq -r .last_completed_step "$sb/runs/$id/state.json" 2>/dev/null)
+  if [[ "$step3" == "validated" ]]; then
+    echo "  PASS  full-chain: continue #3 → validated (CP3)"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  full-chain: continue #3 expected validated, got '$step3'"
+    fail_count=$((fail_count + 1))
+    rm -rf "$sb"; return
+  fi
+
+  # validated → done (finalize, rename dir)
+  run_in_sb "$sb" continue "$id" --accept > /dev/null 2>&1
+  local final_step
+  if [[ -d "$sb/runs/$id.done" ]]; then
+    final_step=$(jq -r .last_completed_step "$sb/runs/$id.done/state.json" 2>/dev/null)
+    if [[ "$final_step" == "done" ]]; then
+      echo "  PASS  full-chain: continue #4 → done (run dir renamed to <id>.done)"
+      pass_count=$((pass_count + 1))
+    else
+      echo "  FAIL  full-chain: continue #4 expected done, got '$final_step'"
+      fail_count=$((fail_count + 1))
+    fi
+  else
+    echo "  FAIL  full-chain: continue #4 did not rename run dir to <id>.done"
+    fail_count=$((fail_count + 1))
+  fi
+
+  # Side-effects we expect at done:
+  #   1. LOCK gone (release_lock fires in the finalize arm)
+  #   2. state.lanes has both backend + frontend keys
+  if [[ ! -f "$sb/runs/$id.done/LOCK" ]]; then
+    echo "  PASS  full-chain: LOCK released at done"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  full-chain: LOCK still present at done"
+    fail_count=$((fail_count + 1))
+  fi
+  local lane_keys
+  lane_keys=$(jq -r '.lanes | keys | sort | join(",")' "$sb/runs/$id.done/state.json" 2>/dev/null)
+  if [[ "$lane_keys" == "backend,frontend" ]]; then
+    echo "  PASS  full-chain: state.lanes has both backend + frontend keys"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  full-chain: state.lanes expected backend,frontend; got '$lane_keys'"
+    fail_count=$((fail_count + 1))
+  fi
+
+  rm -rf "$sb"
+}
+
+# ---- Round 4: brief with two-lane shape ("Add /loop --status") ----------
+
+test_full_chain_two_lane_brief() {
+  local sb; sb=$(mk_sandbox)
+  run_in_sb "$sb" start "Add /loop --status that prints last run exit code and duration" > /dev/null 2>&1
+  local id
+  id=$(basename "$(find "$sb/runs" -maxdepth 1 -mindepth 1 -type d | head -1)")
+  # Drive to done without checking intermediate states (the previous test
+  # already covers them). This one just verifies the chain doesn't trip on
+  # a different brief shape.
+  run_in_sb "$sb" continue "$id" --accept > /dev/null 2>&1
+  run_in_sb "$sb" continue "$id" --accept > /dev/null 2>&1
+  run_in_sb "$sb" continue "$id" --accept > /dev/null 2>&1
+  run_in_sb "$sb" continue "$id" --accept > /dev/null 2>&1
+  if [[ -d "$sb/runs/$id.done" ]] && \
+     [[ "$(jq -r .last_completed_step "$sb/runs/$id.done/state.json" 2>/dev/null)" == "done" ]]; then
+    echo "  PASS  two-lane brief: chain reaches done"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  two-lane brief: chain did not reach done"
+    local laststep
+    if [[ -d "$sb/runs/$id" ]]; then laststep=$(jq -r .last_completed_step "$sb/runs/$id/state.json" 2>/dev/null); fi
+    echo "       last_completed_step: ${laststep:-<no state>}"
+    fail_count=$((fail_count + 1))
+  fi
+  rm -rf "$sb"
+}
+
 # ---- run -----------------------------------------------------------------
 
 if [[ ! -x "$feature_sh" ]]; then
@@ -400,6 +525,8 @@ test_continue_redo_without_feedback_errors
 test_continue_redo_feedback_in_prompt
 test_continue_accept_story_to_spec
 test_lane_step_emits_lowercase_marker
+test_full_chain_end_to_end
+test_full_chain_two_lane_brief
 
 echo ""
 echo "Results: $pass_count passed, $fail_count failed"

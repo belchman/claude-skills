@@ -78,6 +78,7 @@ See `docs/plans/feature-factory.md` §G. Summary:
 - `CLAUDE_CMD` — command invoked for child dispatches. Default: `claude`. Set to a stub in tests.
 - `LOOP_SH_CMD` — command invoked for lane builds. Default: `../../work-issues/bin/loop.sh` (relative to `bin/feature.sh`).
 - `FEATURE_RUNS_DIR` — root of run state. Default: `.feature_runs` at the repo root.
+- `FEATURE_REPO_ROOT` — where the orchestrator writes spec/rubric/issue/research files. Default: `git rev-parse --show-toplevel` (or `$PWD` if not a git repo). Override in tests so artifacts don't leak into the real `issues/` dir.
 
 ## Hard rules
 

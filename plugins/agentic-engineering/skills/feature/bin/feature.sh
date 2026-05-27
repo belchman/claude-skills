@@ -33,7 +33,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./feature-helpers.sh
 source "$script_dir/feature-helpers.sh"
 
-repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+repo_root="${FEATURE_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 runs_dir="${FEATURE_RUNS_DIR:-$repo_root/.feature_runs}"
 # CLAUDE_CMD may contain flags; parse as array (matches loop.sh's pattern).
 if [[ -n "${CLAUDE_CMD:-}" ]]; then
