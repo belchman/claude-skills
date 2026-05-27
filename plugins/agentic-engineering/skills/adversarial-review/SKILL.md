@@ -81,6 +81,8 @@ Example value: `ADVERSARIAL_REVIEW_TARGETS="src/api/**/*.ts:src/services/**/*.ts
 
 **If unset (default):** auto-discover as documented in Step 3 and summarize at Step 5 — interactive UX is unchanged.
 
+**Note on `## Ignore`:** the review-config `## Ignore` filter is applied inside Step 3, which is *skipped* when `ADVERSARIAL_REVIEW_TARGETS` is set. The orchestrator is the authority on what should be reviewed; TARGETS-supplied paths are reviewed as given.
+
 ---
 
 ## Phase 2: Parallel Adversarial Review (use agent teams)
@@ -212,7 +214,7 @@ After showing the merged findings, ask the user:
 
 **Wait for the user to respond before proceeding.** If they choose D, stop here.
 
-**Automation: `ADVERSARIAL_REVIEW_REPORT_ONLY` env-var.** If `ADVERSARIAL_REVIEW_REPORT_ONLY=1` is set (e.g. by `/feature`'s orchestrator dispatching a validator pass), **skip the user prompt** above and behave as if the user chose option **D** — print the merged findings report, then stop without entering Phase 4. The findings are still useful for the caller to parse and route. **If unset (default):** ask the user A/B/C/D interactively as documented above — interactive UX is unchanged.
+**Automation: `ADVERSARIAL_REVIEW_REPORT_ONLY` env-var.** If `ADVERSARIAL_REVIEW_REPORT_ONLY=1` is set (e.g. by `/feature`'s orchestrator dispatching a validator pass), **skip the user prompt** above and behave as if the user chose option **D** — print the merged findings report, then stop without entering Phase 4. The merged report follows the format defined in Phase 2's agent prompts: each finding is one numbered markdown item starting with the `file+line reference` (e.g. `src/api.ts:42`), so callers like `work-issues-lib.sh::route_findings` parse it reliably by line-leading path token. **If unset (default):** ask the user A/B/C/D interactively as documented above — interactive UX is unchanged.
 
 ---
 
