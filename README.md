@@ -39,7 +39,12 @@ Convention: skills produce/consume a small set of files (`issues/*.md`, `issues/
 
 #### Notable: `/feature`
 
-End-to-end orchestrator. One brief in, a vertically-sliced feature out, **three human checkpoints** between (approve story, approve spec+rubric, approve PR). Every step between checkpoints runs in a fresh `claude -p` subprocess so context never collapses. Resumable across terminal close, machine reboot, week-long pauses — state is journaled to `.feature_runs/<id>/state.json` after every step.
+End-to-end orchestrator. One brief in, a vertically-sliced feature out, **three human checkpoints** between (approve story, approve spec+rubric, approve PR). Two invocation modes share the same artifact contract:
+
+- **In-conversation** (default — when you type `/feature` inside Claude Code). Every step dispatches a forked Agent subagent so output is visible inline, per-step model selection is possible (Haiku for read-heavy steps, Sonnet for spec/rubric writers, parent model for code), and checkpoints pause via `AskUserQuestion` right in the conversation.
+- **Headless** (when you run `feature.sh start` directly from a shell). Each step runs as a separate `claude -p` subprocess cache-hot via `--resume <parent_sid> --fork-session`. Pauses by exiting between steps. Resume via `feature.sh continue <id>`. Survives terminal close, machine reboot, week-long pauses.
+
+State journaled to `.feature_runs/<id>/state.json` after every step in both modes — an in-conversation run can be aborted to disk and resumed via `feature.sh continue <id>` (or vice versa).
 
 ```mermaid
 %%{ init: { 'theme': 'base', 'themeVariables': {
@@ -111,14 +116,23 @@ flowchart TD
 
 **Solid arrows** = forward progress. **Dotted arrows** = `--redo` (user requested a re-run) or critical-finding loopback (validator caught something; orchestrator re-invokes the lane). **Hexagonal validators** read the diff after each lane and route Critical findings back into the lane that owns the failing path. **Trapezoid checkpoints** are the three human gates — accept advances to the next phase, redo reruns with feedback.
 
+**In-conversation** (default):
+
 ```
 /feature "Add invoice reminders for invoices unpaid >7 days"
-# → creates run id, drafts research + story
-# → pauses at Checkpoint 1
-/feature continue <id> --accept              # advance through to next checkpoint
-/feature continue <id> --redo "<feedback>"   # re-run the current step with feedback
-/feature abort <id>                          # give up, release LOCK
-/feature status <id>                         # human-readable state.json
+```
+
+Claude reads the SKILL.md, computes a run id, dispatches a forked Agent subagent per step, and pauses at each checkpoint with an inline `AskUserQuestion`. Per-step models can be overridden naturally: `/feature Build X. Use opus for the spec, haiku for the validators, sonnet for everything else.` — the orchestrator parses that, echoes the resolved 9-row model table for you to correct, then proceeds.
+
+**Headless** (when you'll close the terminal — say "AFK" / "overnight" / "I'm closing my laptop" and the in-conversation skill bash-invokes the script automatically, or run it yourself):
+
+```
+feature.sh start "Add invoice reminders for invoices unpaid >7 days"
+# → creates run id, drafts research + story, exits at Checkpoint 1
+feature.sh continue <id> --accept              # advance through to next checkpoint
+feature.sh continue <id> --redo "<feedback>"   # re-run the current step with feedback
+feature.sh abort <id>                          # give up, release LOCK
+feature.sh status <id>                         # human-readable state.json
 ```
 
 Slash-only; auto-invocation guarded by `disable-model-invocation: true`. Full chain + failure modes: [`docs/plans/feature-factory.md`](docs/plans/feature-factory.md). Build retrospective: [`docs/lessons-learned/feature-factory-build.md`](docs/lessons-learned/feature-factory-build.md).
