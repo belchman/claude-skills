@@ -44,6 +44,35 @@ else
 fi
 loop_sh_cmd="${LOOP_SH_CMD:-$script_dir/../../work-issues/bin/loop.sh}"
 
+# Resolve a per-step claude command. Precedence: CLAUDE_CMD_<STEP> → CLAUDE_CMD → claude.
+# Recognized override env vars: CLAUDE_CMD_RESEARCH, CLAUDE_CMD_STORY,
+# CLAUDE_CMD_SPEC, CLAUDE_CMD_RUBRIC, CLAUDE_CMD_VALIDATOR. Sets the global
+# `step_cmd` array.
+resolve_step_cmd() {
+  local step="$1"
+  local var="CLAUDE_CMD_${step}"
+  local override="${!var:-}"
+  if [[ -n "$override" ]]; then
+    # shellcheck disable=SC2206
+    step_cmd=(${override})
+  elif [[ -n "${CLAUDE_CMD:-}" ]]; then
+    # shellcheck disable=SC2206
+    step_cmd=(${CLAUDE_CMD})
+  else
+    step_cmd=(claude)
+  fi
+}
+
+# True (rc=0) if the per-step override does NOT already specify --effort,
+# meaning the orchestrator should append its `--effort low` default. Only
+# meaningful for RESEARCH and STORY steps; other steps never get the default.
+step_override_has_effort() {
+  local step="$1"
+  local var="CLAUDE_CMD_${step}"
+  local override="${!var:-}"
+  [[ "$override" == *"--effort"* ]]
+}
+
 iso_now() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 
 slugify() {
@@ -193,9 +222,12 @@ cmd_start() {
   local now
   now=$(iso_now)
   # Initial state.json — fields populated incrementally as steps complete.
+  # `parent_session_id` is positioned right after `id` (ST-1); empty until
+  # the primer dispatch succeeds and we capture the JSON `session_id`.
   state_write_atomic "$run_dir/state.json" "$(cat <<EOF
 {
   "id": "$id",
+  "parent_session_id": "",
   "brief_path": "$run_dir/brief.md",
   "issue_path": "",
   "research_path": "",
@@ -209,6 +241,18 @@ cmd_start() {
 }
 EOF
 )"
+
+  # Primer: one cache-priming dispatch that loads brief.md (and ARCHITECTURE.md
+  # when present). Every subsequent prompt-based step forks this session with
+  # --resume + --fork-session so it inherits the cached context. See
+  # ## Cost optimization in SKILL.md.
+  step_primer "$id" "$run_dir"
+  local primer_rc=$?
+  if (( primer_rc != 0 )); then
+    release_lock "$run_dir/LOCK"
+    trap - INT TERM
+    return 3
+  fi
 
   # Steps 1-3 (refresh map, researcher, story). Each must succeed before the
   # next runs — chain with && so a failure halts the run cleanly.
@@ -320,8 +364,58 @@ step_refresh_map() {
   fi
   local prompt
   prompt=$(build_prompt "Use the /map skill to generate ARCHITECTURE.md at the repo root.")
+  # Slash-skill dispatch — does NOT use --resume/--fork-session (the /map skill
+  # starts its own dispatchers and should not inherit primer context). See
+  # SKILL.md ## Cost optimization for why this step is exempt.
   "${claude_cmd[@]}" -p "$prompt" > "$run_dir/map.log" 2>&1 || return 1
   update_state_step "$run_dir/state.json" "map_fresh"
+}
+
+# Prime the prompt cache with brief.md (and ARCHITECTURE.md when present).
+# Dispatches one `claude -p ... --output-format json`, parses the returned
+# session_id from stdout JSON, and writes it to state.parent_session_id via
+# state_set_field. Fails loud if the dispatch errors, the output is not JSON,
+# or session_id is missing/empty — better to abort than continue with an empty
+# parent_session_id and silently lose the cache benefit.
+step_primer() {
+  local id="$1" run_dir="$2"
+  local brief
+  brief=$(cat "$run_dir/brief.md")
+  local primer_prompt="Primer for feature run $id. The following materials are loaded into context so subsequent steps (forked from this session) can reuse the cache.
+
+Brief (from brief.md):
+$brief"
+  if [[ -f "$repo_root/ARCHITECTURE.md" ]]; then
+    primer_prompt+="
+
+Architecture map (from ARCHITECTURE.md):
+$(cat "$repo_root/ARCHITECTURE.md")"
+  fi
+  primer_prompt+="
+
+Acknowledge that you have loaded this context. No other action needed."
+
+  local primer_json primer_rc
+  primer_json=$("${claude_cmd[@]}" --output-format json -p "$primer_prompt" 2>"$run_dir/primer.err")
+  primer_rc=$?
+  printf '%s\n' "$primer_json" > "$run_dir/primer.log"
+  if (( primer_rc != 0 )); then
+    echo "feature.sh start: primer dispatch failed (exit $primer_rc); see $run_dir/primer.err" >&2
+    return 1
+  fi
+  local parent_sid=""
+  if command -v jq >/dev/null 2>&1; then
+    parent_sid=$(printf '%s' "$primer_json" | jq -r '.session_id // empty' 2>/dev/null)
+  else
+    parent_sid=$(printf '%s' "$primer_json" \
+      | grep -oE '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' \
+      | head -1 | sed -E 's/.*"session_id"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
+  fi
+  if [[ -z "$parent_sid" ]]; then
+    echo "feature.sh start: primer JSON missing session_id key; refusing to continue with empty parent_session_id" >&2
+    return 1
+  fi
+  state_set_field "$run_dir/state.json" parent_session_id "$parent_sid"
 }
 
 step_researcher() {
@@ -337,7 +431,16 @@ Brief:
 $brief
 
 Write the research dump to: $research_path")
-  "${claude_cmd[@]}" -p "$prompt" > "$run_dir/research.log" 2>&1 || return 1
+  local step_cmd
+  resolve_step_cmd RESEARCH
+  local parent_sid
+  parent_sid=$(state_field "$run_dir/state.json" parent_session_id)
+  local -a argv=("${step_cmd[@]}" --resume "$parent_sid" --fork-session --output-format json)
+  if ! step_override_has_effort RESEARCH; then
+    argv+=(--effort low)
+  fi
+  argv+=(-p "$prompt")
+  "${argv[@]}" > "$run_dir/research.log" 2>&1 || return 1
   state_set_field "$run_dir/state.json" research_path "$research_path"
   update_state_step "$run_dir/state.json" "research_done"
 }
@@ -357,7 +460,16 @@ $brief
 
 Research:
 $research")
-  "${claude_cmd[@]}" -p "$prompt" > "$run_dir/story.log" 2>&1 || return 1
+  local step_cmd
+  resolve_step_cmd STORY
+  local parent_sid
+  parent_sid=$(state_field "$run_dir/state.json" parent_session_id)
+  local -a argv=("${step_cmd[@]}" --resume "$parent_sid" --fork-session --output-format json)
+  if ! step_override_has_effort STORY; then
+    argv+=(--effort low)
+  fi
+  argv+=(-p "$prompt")
+  "${argv[@]}" > "$run_dir/story.log" 2>&1 || return 1
   state_set_field "$run_dir/state.json" issue_path "$issue_path"
   update_state_step "$run_dir/state.json" "story_drafted"
 }
@@ -374,7 +486,12 @@ step_spec() {
 - Research: $research_path
 
 Write the spec to: $spec_path")
-  "${claude_cmd[@]}" -p "$prompt" > "$run_dir/spec.log" 2>&1 || return 1
+  local step_cmd
+  resolve_step_cmd SPEC
+  local parent_sid
+  parent_sid=$(state_field "$run_dir/state.json" parent_session_id)
+  "${step_cmd[@]}" --resume "$parent_sid" --fork-session --output-format json \
+    -p "$prompt" > "$run_dir/spec.log" 2>&1 || return 1
   # Validate that the spec contains at least one ```paths fence.
   if [[ -f "$spec_path" ]] && ! grep -qE '^```paths[[:space:]]*$' "$spec_path"; then
     echo "step_spec: spec at $spec_path is missing fenced \`\`\`paths blocks under H3 lane headings. Expected format: see write-a-spec/SKILL.md." >&2
@@ -405,7 +522,12 @@ $issue_body
 $spec_body
 
 Write the rubric to: $rubric_path")
-  "${claude_cmd[@]}" -p "$prompt" > "$run_dir/rubric.log" 2>&1 || return 1
+  local step_cmd
+  resolve_step_cmd RUBRIC
+  local parent_sid
+  parent_sid=$(state_field "$run_dir/state.json" parent_session_id)
+  "${step_cmd[@]}" --resume "$parent_sid" --fork-session --output-format json \
+    -p "$prompt" > "$run_dir/rubric.log" 2>&1 || return 1
   state_set_field "$run_dir/state.json" rubric_path "$rubric_path"
   update_state_step "$run_dir/state.json" "rubric_drafted"
 }
@@ -510,8 +632,13 @@ step_validator() {
   done <<< "$lanes"
   targets="${targets%:}"
 
+  local step_cmd
+  resolve_step_cmd VALIDATOR
+  local parent_sid
+  parent_sid=$(state_field "$run_dir/state.json" parent_session_id)
   ADVERSARIAL_REVIEW_REPORT_ONLY=1 ADVERSARIAL_REVIEW_TARGETS="$targets" \
-    "${claude_cmd[@]}" -p "Use the /adversarial-review skill with --diff. Print the merged findings report." \
+    "${step_cmd[@]}" --resume "$parent_sid" --fork-session --output-format json \
+    -p "Use the /adversarial-review skill with --diff. Print the merged findings report." \
     > "$findings_path" 2>&1
   local rc=$?
 

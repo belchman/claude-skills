@@ -51,6 +51,21 @@ out="$STUB_OUT_DIR/prompt-$n.log"
   echo "## ENV ##"
   env | grep -E '^(ADVERSARIAL_REVIEW_|WORK_ISSUES_|CLAUDE_)' || true
 } > "$out"
+# Emit a fake session_id JSON when --output-format json is requested (T-3).
+# The orchestrator's primer dispatch parses .session_id from this; subsequent
+# step dispatches also pass --output-format json but the orchestrator only
+# redirects their stdout to per-step .log files, so the JSON is benign there.
+prev=""
+out_json=0
+for a in "$@"; do
+  if [[ "$prev" == "--output-format" && "$a" == "json" ]]; then
+    out_json=1
+  fi
+  prev="$a"
+done
+if (( out_json == 1 )); then
+  printf '{"session_id":"stub-%s"}\n' "$n"
+fi
 # The orchestrator passes the prompt as the LAST -p arg. Find a "Write … to: <path>"
 # instruction and create that file as a minimal valid artifact.
 prompt="${@: -1}"
@@ -681,6 +696,315 @@ test_full_chain_two_lane_brief() {
   rm -rf "$sb"
 }
 
+# ---- Primer + fork-from-session ------------------------------------------
+#
+# T-2 / P-1..P-5 / F-1..F-7 / E-1..E-4 / M-1..M-4 / ST-1..ST-2.
+#
+# These tests drive `start` then `continue --accept` repeatedly so every step
+# function fires, then walk the prompt-N.log files looking for the right argv
+# shape. Helpers below identify a per-step log by grepping the recorded prompt
+# body for a unique substring.
+
+# Find the prompt-N.log under $1 whose prompt body contains substring $2.
+# Returns the most recent match (highest N).
+_find_log_for() {
+  local dir="$1" needle="$2" log
+  for log in $(ls -t "$dir"/prompt-*.log 2>/dev/null); do
+    if grep -qF "$needle" "$log"; then
+      printf '%s\n' "$log"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Assert that file $1 has argv containing both $2 and $3 (any order).
+_assert_argv_has_two() {
+  local label="$1" log="$2" a="$3" b="$4"
+  if [[ -f "$log" ]] && grep -qF -- "$a" "$log" && grep -qF -- "$b" "$log"; then
+    echo "  PASS  $label"; pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  $label (log=$log)"
+    [[ -f "$log" ]] && head -30 "$log" | sed 's/^/    /'
+    fail_count=$((fail_count + 1))
+  fi
+}
+
+_assert_argv_lacks() {
+  local label="$1" log="$2" needle="$3"
+  if [[ -f "$log" ]] && ! grep -qF -- "$needle" "$log"; then
+    echo "  PASS  $label"; pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  $label (log=$log)"
+    fail_count=$((fail_count + 1))
+  fi
+}
+
+# T-2 + P-1..P-4 + ST-1..ST-2: primer dispatch populates parent_session_id.
+test_primer_populates_parent_session_id() {
+  local sb; sb=$(mk_sandbox)
+  run_in_sb "$sb" start "primer test brief" > /dev/null 2>&1
+  local id
+  id=$(basename "$(find "$sb/runs" -maxdepth 1 -mindepth 1 -type d | head -1)")
+  local state="$sb/runs/$id/state.json"
+  local sid
+  sid=$(jq -r '.parent_session_id // empty' "$state" 2>/dev/null)
+  if [[ -n "$sid" ]]; then
+    echo "  PASS  primer: state.parent_session_id populated ($sid) (T-2/P-4/ST-2)"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  primer: state.parent_session_id missing or empty"
+    fail_count=$((fail_count + 1))
+  fi
+  # ST-1: parent_session_id appears in the first 3 keys (right after id).
+  local keys
+  keys=$(jq -r 'keys_unsorted[0:3] | join(",")' "$state" 2>/dev/null)
+  if [[ "$keys" == "id,parent_session_id,"* ]]; then
+    echo "  PASS  primer: parent_session_id positioned right after id (ST-1)"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  primer: expected 'id,parent_session_id,...' got '$keys' (ST-1)"
+    fail_count=$((fail_count + 1))
+  fi
+  # P-1: the first prompt-N.log carries --output-format json (primer dispatch).
+  local first_log="$sb/stub-out/prompt-0.log"
+  if [[ -f "$first_log" ]] && grep -qF -- "--output-format" "$first_log" && grep -qF -- "json" "$first_log"; then
+    echo "  PASS  primer: first claude dispatch uses --output-format json (P-1)"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  primer: first dispatch missing --output-format json (P-1)"
+    fail_count=$((fail_count + 1))
+  fi
+  # P-2: primer prompt references brief.md
+  if grep -qF "brief.md" "$first_log"; then
+    echo "  PASS  primer: prompt references brief.md (P-2)"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  primer: prompt missing brief.md reference (P-2)"
+    fail_count=$((fail_count + 1))
+  fi
+  rm -rf "$sb"
+}
+
+# P-3a: ARCHITECTURE.md absent → primer prompt does NOT reference it; chain still succeeds.
+test_primer_without_architecture_md() {
+  local sb; sb=$(mk_sandbox)
+  # No ARCHITECTURE.md exists in $sb
+  run_in_sb "$sb" start "brief no arch" > /dev/null 2>&1
+  local first_log="$sb/stub-out/prompt-0.log"
+  if [[ -f "$first_log" ]] && ! grep -qF "ARCHITECTURE.md" "$first_log"; then
+    echo "  PASS  primer: omits ARCHITECTURE.md reference when file absent (P-3a)"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  primer: should not reference ARCHITECTURE.md when missing (P-3a)"
+    fail_count=$((fail_count + 1))
+  fi
+  rm -rf "$sb"
+}
+
+# P-3b: ARCHITECTURE.md present → primer prompt DOES reference it.
+test_primer_with_architecture_md() {
+  local sb; sb=$(mk_sandbox)
+  echo "# Architecture map fixture" > "$sb/ARCHITECTURE.md"
+  run_in_sb "$sb" start "brief with arch" > /dev/null 2>&1
+  local first_log="$sb/stub-out/prompt-0.log"
+  if [[ -f "$first_log" ]] && grep -qF "ARCHITECTURE.md" "$first_log"; then
+    echo "  PASS  primer: references ARCHITECTURE.md when present (P-3b)"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  primer: should reference ARCHITECTURE.md when present (P-3b)"
+    fail_count=$((fail_count + 1))
+  fi
+  rm -rf "$sb"
+}
+
+# P-5: primer JSON missing session_id → cmd_start exits non-zero.
+test_primer_failure_aborts_start() {
+  local sb; sb=$(mk_sandbox)
+  # Replace stub claude with one that emits {} when --output-format json
+  cat > "$sb/claude-stub" <<'STUB'
+#!/usr/bin/env bash
+n=$(ls "$STUB_OUT_DIR" 2>/dev/null | wc -l | tr -d ' ')
+out="$STUB_OUT_DIR/prompt-$n.log"
+{ echo "## ARGS ##"; printf '%s\n' "$@"; } > "$out"
+prev=""
+for a in "$@"; do
+  if [[ "$prev" == "--output-format" && "$a" == "json" ]]; then
+    echo "{}"
+    exit 0
+  fi
+  prev="$a"
+done
+exit 0
+STUB
+  chmod +x "$sb/claude-stub"
+  local rc
+  run_in_sb "$sb" start "brief that should fail" > /dev/null 2>&1
+  rc=$?
+  if (( rc != 0 )); then
+    echo "  PASS  primer: cmd_start exits non-zero when session_id missing (P-5)"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  primer: cmd_start should fail when session_id missing (P-5)"
+    fail_count=$((fail_count + 1))
+  fi
+  rm -rf "$sb"
+}
+
+# F-1..F-5 + F-7 + E-1..E-2: drive the chain, walk per-step logs.
+test_steps_fork_from_primer() {
+  local sb; sb=$(mk_sandbox)
+  run_in_sb "$sb" start "fork-from-primer brief" > /dev/null 2>&1
+  local id
+  id=$(basename "$(find "$sb/runs" -maxdepth 1 -mindepth 1 -type d | head -1)")
+  # Drive through CP2 so spec + rubric fire, then through the lanes so the
+  # validator fires.
+  run_in_sb "$sb" continue "$id" --accept > /dev/null 2>&1
+  run_in_sb "$sb" continue "$id" --accept > /dev/null 2>&1
+  local sid
+  sid=$(jq -r '.parent_session_id' "$sb/runs/$id/state.json" 2>/dev/null)
+  local stub_out="$sb/stub-out"
+
+  local researcher_log story_log spec_log rubric_log validator_log
+  researcher_log=$(_find_log_for "$stub_out" "research dump")
+  story_log=$(_find_log_for "$stub_out" "prd-to-issues issue template")
+  spec_log=$(_find_log_for "$stub_out" "write-a-spec skill")
+  rubric_log=$(_find_log_for "$stub_out" "write-a-rubric skill")
+  validator_log=$(_find_log_for "$stub_out" "adversarial-review")
+
+  _assert_argv_has_two "step_researcher: --resume + --fork-session (F-1)" "$researcher_log" "--resume" "--fork-session"
+  _assert_argv_has_two "step_story:      --resume + --fork-session (F-2)" "$story_log" "--resume" "--fork-session"
+  _assert_argv_has_two "step_spec:       --resume + --fork-session (F-3)" "$spec_log" "--resume" "--fork-session"
+  _assert_argv_has_two "step_rubric:     --resume + --fork-session (F-4)" "$rubric_log" "--resume" "--fork-session"
+  _assert_argv_has_two "step_validator:  --resume + --fork-session (F-5)" "$validator_log" "--resume" "--fork-session"
+
+  # F-7: --output-format json on every step 2+ dispatch
+  for label_log in "researcher:$researcher_log" "story:$story_log" "spec:$spec_log" "rubric:$rubric_log" "validator:$validator_log"; do
+    local lbl="${label_log%%:*}" log="${label_log#*:}"
+    if [[ -f "$log" ]] && grep -qF -- "--output-format" "$log" && grep -qF -- "json" "$log"; then
+      echo "  PASS  step_$lbl: --output-format json present (F-7)"
+      pass_count=$((pass_count + 1))
+    else
+      echo "  FAIL  step_$lbl: --output-format json missing (F-7)"
+      fail_count=$((fail_count + 1))
+    fi
+  done
+
+  # Parent sid appears as argv value to --resume
+  if grep -qF "$sid" "$researcher_log"; then
+    echo "  PASS  step_researcher: --resume value matches parent_session_id"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  step_researcher: --resume value does not match parent_session_id ($sid)"
+    fail_count=$((fail_count + 1))
+  fi
+
+  # E-1 / E-2: --effort low on researcher + story by default
+  if grep -qF -- "--effort" "$researcher_log" && grep -qF "low" "$researcher_log"; then
+    echo "  PASS  step_researcher: --effort low present by default (E-1)"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  step_researcher: --effort low missing (E-1)"
+    fail_count=$((fail_count + 1))
+  fi
+  if grep -qF -- "--effort" "$story_log" && grep -qF "low" "$story_log"; then
+    echo "  PASS  step_story: --effort low present by default (E-2)"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  step_story: --effort low missing (E-2)"
+    fail_count=$((fail_count + 1))
+  fi
+
+  # E-4: spec/rubric/validator do NOT carry --effort by default
+  for label_log in "spec:$spec_log" "rubric:$rubric_log" "validator:$validator_log"; do
+    local lbl="${label_log%%:*}" log="${label_log#*:}"
+    if [[ -f "$log" ]] && ! grep -qF -- "--effort" "$log"; then
+      echo "  PASS  step_$lbl: no --effort by default (E-4)"
+      pass_count=$((pass_count + 1))
+    else
+      echo "  FAIL  step_$lbl: --effort present by default (E-4)"
+      fail_count=$((fail_count + 1))
+    fi
+  done
+
+  rm -rf "$sb"
+}
+
+# F-6: step_refresh_map does NOT use --resume / --fork-session.
+test_refresh_map_does_not_fork() {
+  local sb; sb=$(mk_sandbox)
+  # Don't create ARCHITECTURE.md so step_refresh_map actually dispatches.
+  run_in_sb "$sb" start "refresh map brief" > /dev/null 2>&1
+  local stub_out="$sb/stub-out"
+  local map_log
+  map_log=$(_find_log_for "$stub_out" "/map skill")
+  _assert_argv_lacks "step_refresh_map: no --resume (F-6)" "$map_log" "--resume"
+  _assert_argv_lacks "step_refresh_map: no --fork-session (F-6)" "$map_log" "--fork-session"
+  rm -rf "$sb"
+}
+
+# M-2 + M-4: CLAUDE_CMD_RESEARCH overrides researcher only; tokens split.
+test_per_step_override_research() {
+  local sb; sb=$(mk_sandbox)
+  # Create a "fake-haiku" command that just delegates to the real stub so
+  # artifacts still get created. We do that by symlinking it.
+  ln -s "$sb/claude-stub" "$sb/fake-haiku"
+  STUB_OUT_DIR="$sb/stub-out" \
+  CLAUDE_CMD="$sb/claude-stub" \
+  CLAUDE_CMD_RESEARCH="$sb/fake-haiku --model haiku" \
+  LOOP_SH_CMD="$sb/loop-sh-stub" \
+  FEATURE_RUNS_DIR="$sb/runs" \
+  FEATURE_REPO_ROOT="$sb" \
+    bash "$feature_sh" start "override research brief" > /dev/null 2>&1
+  local researcher_log story_log
+  researcher_log=$(_find_log_for "$sb/stub-out" "research dump")
+  story_log=$(_find_log_for "$sb/stub-out" "prd-to-issues issue template")
+  # The researcher log's first ARGS line is the prompt body if argv had a single
+  # element; since we recorded "## ARGS ##\n<arg0>\n<arg1>...", the override
+  # tokens will appear as separate lines. M-4: --model and haiku on separate lines.
+  if [[ -f "$researcher_log" ]] && grep -qE '^--model$' "$researcher_log" && grep -qE '^haiku$' "$researcher_log"; then
+    echo "  PASS  per-step override: tokens split into argv (M-4)"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  per-step override: tokens not split (M-4)"
+    fail_count=$((fail_count + 1))
+  fi
+  # M-2: story still uses CLAUDE_CMD fallback (the real stub), not fake-haiku.
+  if [[ -f "$story_log" ]] && ! grep -qE '^--model$' "$story_log"; then
+    echo "  PASS  per-step override: story unaffected by CLAUDE_CMD_RESEARCH (M-2)"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  per-step override: story argv unexpectedly contains --model (M-2)"
+    fail_count=$((fail_count + 1))
+  fi
+  rm -rf "$sb"
+}
+
+# E-3: CLAUDE_CMD_RESEARCH carrying --effort suppresses the default --effort low.
+test_effort_override_no_duplicate() {
+  local sb; sb=$(mk_sandbox)
+  ln -s "$sb/claude-stub" "$sb/fake-claude"
+  STUB_OUT_DIR="$sb/stub-out" \
+  CLAUDE_CMD="$sb/claude-stub" \
+  CLAUDE_CMD_RESEARCH="$sb/fake-claude --effort high" \
+  LOOP_SH_CMD="$sb/loop-sh-stub" \
+  FEATURE_RUNS_DIR="$sb/runs" \
+  FEATURE_REPO_ROOT="$sb" \
+    bash "$feature_sh" start "effort override brief" > /dev/null 2>&1
+  local researcher_log
+  researcher_log=$(_find_log_for "$sb/stub-out" "research dump")
+  local effort_count
+  effort_count=$(grep -cE '^--effort$' "$researcher_log" 2>/dev/null || echo 0)
+  if [[ "$effort_count" == "1" ]]; then
+    echo "  PASS  effort override: --effort appears exactly once (E-3)"
+    pass_count=$((pass_count + 1))
+  else
+    echo "  FAIL  effort override: --effort count expected 1, got $effort_count (E-3)"
+    fail_count=$((fail_count + 1))
+  fi
+  rm -rf "$sb"
+}
+
 # ---- run -----------------------------------------------------------------
 
 if [[ ! -x "$feature_sh" ]]; then
@@ -705,6 +1029,14 @@ test_full_chain_end_to_end
 test_full_chain_two_lane_brief
 test_route_and_loopback_redispatches_on_critical
 test_route_and_loopback_returns_0_when_no_critical
+test_primer_populates_parent_session_id
+test_primer_without_architecture_md
+test_primer_with_architecture_md
+test_primer_failure_aborts_start
+test_steps_fork_from_primer
+test_refresh_map_does_not_fork
+test_per_step_override_research
+test_effort_override_no_duplicate
 
 echo ""
 echo "Results: $pass_count passed, $fail_count failed"
