@@ -1,93 +1,287 @@
 ---
 name: feature
-description: 'Orchestrate the full agentic-engineering chain on one brief — refresh /map, dispatch an Explore researcher, draft a story, write a spec, write a rubric, build the backend lane, run a validator pass, build the frontend lane, run a final validator, surface findings — with three human checkpoints (story, spec+rubric, PR). Resumable across sessions via .feature_runs/<id>/state.json. Use when the user says /feature, "build this feature", "run the full chain", "orchestrate this feature end-to-end". Slash-only — Claude should Bash-invoke bin/feature.sh, never replicate its logic in-conversation.'
+description: 'Orchestrate the full agentic-engineering chain on one brief — map → research → story → spec → rubric → backend lane → validator → frontend lane → final validator → PR — with three human checkpoints (story, spec+rubric, PR). Default path is in-conversation: each step runs as a forked Agent subagent so output is visible inline and per-step model selection is possible (Haiku for read-heavy steps, Sonnet/parent for writers, parent for code). Headless escape hatch: bash-invoke ${CLAUDE_SKILL_DIR}/bin/feature.sh for true AFK runs that survive terminal close. Triggers: /feature, "build this feature", "run the full chain", "orchestrate this feature end-to-end".'
 disable-model-invocation: true
+allowed-tools: Read Write Edit Bash Grep Glob Agent AskUserQuestion TaskCreate TaskUpdate
 ---
 
-# /feature — the orchestrator
+# /feature — orchestrator
 
-`/feature` is a thin user-facing wrapper around `bin/feature.sh`. When the user types `/feature "<brief>"`, the only thing you (Claude) need to do is **Bash-invoke** the script and surface its stdout to the user. Do NOT try to replicate the chain in conversation — that's exactly what the orchestrator exists to prevent (collapsed-context drift, see PRD).
+Two ways `/feature` can run, picked by **how it was invoked**:
 
-## When this skill is the right tool
+| Invocation | Mode | Use when |
+| --- | --- | --- |
+| User types `/feature "<brief>"` in a Claude session | **in-conversation** (default) | You want to watch it happen, steer mid-flight, and pay cheaper per-step models |
+| User runs `${CLAUDE_SKILL_DIR}/bin/feature.sh start "<brief>"` from a shell | **headless** (the bash script) | True AFK — terminal will close, week-long pause expected, no Claude session running |
 
-The chain has real overhead — three human checkpoints, six subagent dispatches, multiple file artifacts (`issues/NNN-*.md`, `*.spec.md`, `*.rubric.md`, `*.research.md`). It pays for itself when the work is **a real feature**: at least one data-model change, API change, or UI change, with multiple files touched across lanes, where catching architectural assumptions at the spec stage prevents downstream rework.
+You (Claude reading this SKILL.md) are in-conversation mode. That's the default. **Only fall back to bash-invoking `feature.sh`** if the user explicitly says "run this AFK", "overnight", "I'm closing my laptop", "headless", or similar — then strip the trigger phrase from the brief and exit the in-conversation flow with a single bash-invoke. Example: user says `/feature Add a /version flag. Run this AFK, I'm closing my laptop.` → brief passed to feature.sh is `"Add a /version flag."` (trigger sentence dropped).
 
-The chain is **overkill** when the work is:
+Both modes produce the same artifacts on disk (`issues/NNN-*.md`, `issues/NNN-*.spec.md`, `issues/NNN-*.rubric.md`, `issues/research/NNN-*.md`) and the same `.feature_runs/<id>/state.json` schema, so a mid-run handoff between modes is supported.
+
+## When `/feature` is the right tool
+
+The chain has real overhead — three checkpoints, ~8 subagent dispatches, multiple file artifacts. It pays for itself when the work is **a real feature**: at least one data-model change, API change, or UI change, with multiple files touched across lanes, where catching architectural assumptions at the spec stage prevents downstream rework.
+
+**Overkill** when the work is:
 - A one-file fix (typo, bug in a single function, dependency bump).
 - A trivial CLI flag or subcommand (10-50 lines, no schema, no API contract).
-- A doc edit or README sync.
-- A test-only change.
+- An isolated doc edit or single-file README sync (NOT a cross-cutting docs restructure).
+- An isolated test-only change (NOT a coverage backfill spanning many modules).
 
-For overkill cases, surface that to the user before Bash-invoking. Suggest the direct path ("I can edit `crap.py` directly — that's ~10 lines"). If the user confirms "just do it inline" — or if they were explicit upfront with phrasing like "just do this inline, the orchestrator is overkill" — comply per the standard user-instructions-override-defaults rule. Don't bureaucratize trivial work.
+For overkill cases, surface that to the user and suggest the direct path ("I can edit `crap.py` directly — that's ~10 lines"). If the user confirms "just do it inline" — or was explicit upfront — comply per the user-instructions-override-defaults rule. Don't bureaucratize trivial work.
 
-For real-feature cases, Bash-invoke without hedging. The whole point is to NOT pre-design in the calling context.
+---
 
-## Invocation
+## In-conversation orchestration (default)
 
-The script lives at `${CLAUDE_SKILL_DIR}/bin/feature.sh` — Claude Code sets `CLAUDE_SKILL_DIR` to this skill's installed directory regardless of how the plugin was installed (marketplace, symlink, source repo). Invoke it as:
+### Invocation forms
+
+- `/feature "<brief>"` — start a new run.
+- `/feature <id>` (no brief) or "continue feature run \<id\>" — **resume** an existing run from `.feature_runs/<id>/state.json`. See "Resuming a run" below before doing anything else.
+
+### Setup (new run)
+
+1. Compute a run id: `printf '%04d-%s' "$next" "$slug"` where `next = max numeric prefix in issues/*.md + 1` and `slug = brief lowercased, stop words (a, an, the, this, that, to, for, of, on, in, and, or) stripped, non-alphanum runs collapsed to `-`, trimmed to ≤40 chars, no leading/trailing dash`. **Empty-slug fallback**: if the brief leaves nothing after stop-word stripping (very rare — e.g. all-stop-words input, or a one-word brief that IS a stop word), use the short hash of the brief: `printf '%s' "$brief" | shasum -a 256 | cut -c1-8`. Final id example: `0042-a3f17d2c`.
+2. `TaskCreate` a parent task "feature/<id>" with subtasks for each step below, so the user sees a checklist.
+3. Write the brief to `.feature_runs/<id>/brief.md` (create the dir).
+4. Write the initial `state.json` (see schema in "State persistence") with `last_completed_step: "init"`.
+
+### Step 1: refresh map (skip if ARCHITECTURE.md exists)
+
+`Read ARCHITECTURE.md`. If missing, dispatch a `general-purpose` Agent with `model: haiku` and the `/map` skill's instructions. Wait for it; if the file was written, continue. If not, ask the user to invoke `/map` manually and abort.
+
+After this step completes (file exists, whether pre-existing or just created): update `state.json` with `last_completed_step: "map_fresh"`.
+
+### Step 2: research
+
+Dispatch the `Agent` tool with `subagent_type: "Explore"` (read-only, fast — Explore type only has Read/Grep/Glob):
+- prompt: brief + read `ARCHITECTURE.md` + glob the dirs the brief references, produce a structured research dump
+- model: `haiku`
+- have it write to `issues/research/<id>.md`
+
+After this step completes: update `state.json` with `last_completed_step: "research_done"` and `research_path`.
+
+### Step 3: story (`prd-to-issues` in single-issue mode)
+
+Dispatch a `general-purpose` Agent:
+- skill: `plugins/agentic-engineering/skills/prd-to-issues/SKILL.md` (pass full body in prompt)
+- prompt: "Treat this brief as a single-feature PRD. Apply the AFK fallback (no quiz). Produce ONE issue at `issues/<id>.md` with a `### Slice rationale` sub-section."
+- inputs: `.feature_runs/<id>/brief.md` + `issues/research/<id>.md`
+- model: `sonnet`
+
+### ⏸️ Checkpoint 1 — approve story
+
+Before pausing: write `state.json` with `last_completed_step: "story_drafted"` and `issue_path`.
+
+`AskUserQuestion` with question "Approve the story?" and options:
+- **Approve** (continue to spec)
+- **Redo with feedback** (collect feedback, re-dispatch step 3 with feedback prepended)
+- **Abort** (write `state.json` with `last_completed_step: "aborted"` and stop)
+
+**Cap on redos**: 3 per checkpoint. Track via an in-session counter (do NOT need to persist to state.json — if the user resumes after closing the session, the cap resets, which is acceptable since "user closed and reopened" is itself a signal they're starting fresh on that checkpoint). After the 3rd "Redo" at the same checkpoint in a single session, ask the user whether to abort or accept-as-is. Don't redo silently forever.
+
+### Step 4: spec
+
+Dispatch a `general-purpose` Agent:
+- skill: `plugins/agentic-engineering/skills/write-a-spec/SKILL.md` (pass full body)
+- prompt: "Apply the path-format rule strictly — repo-root-relative paths. Lane labels from CLAUDE.md ## Lane boundaries verbatim (lowercase in claude-skills)."
+- inputs: `issues/<id>.md` + `issues/research/<id>.md`
+- model: `sonnet`
+- output: `issues/<id>.spec.md`
+
+Validate immediately — run `allowlist_for` for **every** H3 lane declared in the spec (don't just check backend; a malformed frontend lane would silently no-op at step 8):
 
 ```bash
-"${CLAUDE_SKILL_DIR}/bin/feature.sh" start "<the user's brief verbatim>"
+bash -c 'source plugins/agentic-engineering/skills/work-issues/bin/work-issues-lib.sh && \
+  for lane in $(awk "/^### / {sub(/^### /,\"\"); sub(/[[:space:]]+\$/,\"\"); print}" issues/<id>.spec.md); do
+    echo "=== $lane ==="
+    allowlist_for issues/<id>.spec.md "$lane" || echo "FAIL: $lane"
+  done'
 ```
 
-The script handles everything from there: creates `.feature_runs/<id>/` in the **user's current working directory** (not the plugin install dir), drafts research + story, exits at Checkpoint 1 with explicit resume instructions printed to stdout. Pass those instructions to the user.
+If any lane returns empty or non-zero, re-dispatch step 4 with feedback citing the malformed lane before continuing. If ALL declared lanes return empty, that's a malformed spec — re-dispatch with feedback about the paths-block fence/H3 contract.
 
-When the user comes back with approval / feedback:
+After validation passes: update `state.json` with `last_completed_step: "spec_drafted"` and `spec_path`.
+
+### Step 5: rubric
+
+Dispatch a `general-purpose` Agent:
+- skill: `plugins/agentic-engineering/skills/write-a-rubric/SKILL.md` (pass full body)
+- prompt: "Defer contract concerns to /adversarial-review per the Rubric-vs-contract section."
+- inputs: `issues/<id>.md` + `issues/<id>.spec.md`
+- model: `sonnet`
+- output: `issues/<id>.rubric.md`
+
+### ⏸️ Checkpoint 2 — approve spec + rubric
+
+Before pausing: write `state.json` with `last_completed_step: "rubric_drafted"` and `rubric_path`.
+
+`AskUserQuestion`. Same three options as CP1 (Approve / Redo / Abort). Same redo cap (3).
+
+### Step 6: backend lane
+
+1. Extract allowlist:
+   ```bash
+   bash -c 'source plugins/agentic-engineering/skills/work-issues/bin/work-issues-lib.sh && allowlist_for issues/<id>.spec.md backend'
+   ```
+2. If empty, skip to step 8 (no backend lane). **If BOTH lanes' allowlists are empty** (you'll discover this at step 8 too), abort the run with a diagnostic — the spec has no work to dispatch, which means write-a-spec produced an empty plan. Surface that to the user and ask whether to redo CP2 or abort.
+3. Build a lane preamble file at `/tmp/feature-runs/<id>/lane-backend.prompt.md`:
+   ```
+   ## Allowlist
+   <paths from allowlist_for>
+
+   ## Escape valve
+   If you need to edit a file outside this allowlist, STOP and append a `## Allowlist additions requested` section to issues/<id>.md naming the file and why. Do NOT edit out-of-lane.
+
+   <body of work-issues SKILL.md without frontmatter>
+   ```
+4. Dispatch a `general-purpose` Agent:
+   - prompt: contents of the lane preamble + the issue + spec + rubric
+   - model: parent (don't override — TDD work needs the user's choice)
+   - the agent runs one work-issues iteration, commits, returns
+
+### Step 7: backend validator
+
+Dispatch a `general-purpose` Agent:
+- skill: `plugins/agentic-engineering/skills/adversarial-review/SKILL.md`
+- env (via prompt instruction): `ADVERSARIAL_REVIEW_REPORT_ONLY=1`, `ADVERSARIAL_REVIEW_TARGETS=<colon-globs from backend allowlist>`
+- prompt: "Phase 3 option D — report only, no fixes. Review the diff from this commit."
+- model: `sonnet`
+- output: findings text returned by the agent
+
+Parse findings:
+- If contains "Critical" referencing a backend path → write `issues/<id>-fix-findings.md` with the Critical findings, then re-dispatch step 6 with the fix issue prepended to the lane preamble.
+- Else → continue.
+
+**Loopback cap: 2 iterations of step 6→7 per lane.** This is a per-validator budget (step 7 has its own 2, step 9 has its own 2). **Persist the counter to state.json** (in a `loopback_counts` object — e.g. `{"step_7_backend": 1, "step_9_backend": 0, "step_9_frontend": 0}`) so a resume after laptop close doesn't reset the budget and risk runaway loops across sessions. After the 2nd backend re-dispatch still surfaces Critical, mark `lanes.backend.status: "blocked"` in state.json and continue to step 8 (the user will see the unresolved findings at CP3). Don't loop forever.
+
+### Step 8: frontend lane (skip if spec has no `### frontend`)
+
+Same as step 6 with `frontend` lane.
+
+### Step 9: final validator
+
+Same as step 7 against the **full diff** (all commits this run produced, both lanes). Loopback semantics if Critical:
+
+1. Use `route_findings` to classify each Critical finding by lane:
+   ```bash
+   bash -c 'source plugins/agentic-engineering/skills/work-issues/bin/work-issues-lib.sh && \
+     route_findings <findings_file> issues/<id>.spec.md'
+   ```
+   Each line of output is `<lane>\t<finding>`.
+2. For each lane that owns ≥1 Critical: re-dispatch that lane's step (step 6 for backend, step 8 for frontend). If a finding's path is `<unmapped>`, surface it at CP3 — don't auto-dispatch.
+3. Independent loopback budget: step 9 gets its own 2 iterations, separate from step 7's budget. Tracked in `state.json.loopback_counts.step_9_<lane>` (one counter per lane that gets re-dispatched from step 9). After 2nd loop still Critical, mark the lane's status `"blocked"` and continue to CP3.
+
+After step 9 passes (or budgets exhausted): update `state.json` with `last_completed_step: "validated"` and `validator_findings: "<findings_path>"`.
+
+### ⏸️ Checkpoint 3 — open PR
+
+`AskUserQuestion` with options:
+- **Open PR** (suggest a title + body from the issue, run `gh pr create` if the user confirms; or just print the suggested PR text)
+- **Redo lane work**
+- **Done, no PR** (mark run done locally)
+
+## Per-step model defaults
+
+Hardcoded defaults below.
+
+| Step | Model | Why |
+| --- | --- | --- |
+| 1 — map | `haiku` | File scans, no synthesis |
+| 2 — research | `haiku` | Read-only Explore |
+| 3 — story | `sonnet` | Light synthesis |
+| 4 — spec | `sonnet` | Architecture decisions |
+| 5 — rubric | `sonnet` | Sharp criteria need reasoning |
+| 6 — backend lane | parent | TDD; user's parent-session model is respected by default |
+| 7 — backend validator | `sonnet` | Coverage analysis |
+| 8 — frontend lane | parent | Same as backend |
+| 9 — final validator | `sonnet` | Coverage analysis |
+
+### Honoring natural-language overrides
+
+When the user says something like "use sonnet for everything" or "use opus for the spec", apply this normalization recipe **and then echo the resolved table back to the user before step 1 so they can correct it**:
+
+1. **Phrase → step set**:
+   - "everything" / "all steps" / "every step" → all 9 rows (including lanes — explicit "everything" wins over the "parent" default).
+   - "everything else" / "the rest" / "everything not mentioned" → **all rows NOT already named in earlier clauses of the same user message**. Example: "use opus for the spec, haiku for the validators, sonnet for everything else" → spec=opus, validators (rows 7+9)=haiku, **all remaining rows (1, 2, 3, 5, 6, 8) = sonnet**. Process the user's clauses left-to-right; "everything else" applies last.
+   - "the lanes" / "the builders" / "the work-issues steps" → rows 6 + 8.
+   - "the validators" → rows 7 + 9.
+   - "the writers" / "spec and rubric" → rows 3 + 4 + 5 (synthesis steps).
+   - "the cheap steps" / "research and map" → rows 1 + 2.
+   - A bare step name ("spec", "rubric", "research", "validator") → match the unique row containing that word in column 1; if ambiguous ("validator" → rows 7 AND 9), ask the user which one.
+2. **Model name** (after "use" / "with" / "switch to"): accept `haiku`, `sonnet`, `opus`, or a full model id like `claude-opus-4-7`. If the name doesn't match a known model alias, ask the user.
+3. **Explicit overrides beat `parent`-default rows** (rows 6 and 8) — "use sonnet for everything" sets lanes to `sonnet`, even though their default is parent.
+4. **Echo back**: print the resolved 9-row table with the overridden cells highlighted (e.g. with `[overridden]` suffix) before dispatching step 1. If the user objects, accept a correction; otherwise proceed.
+
+## Resuming a run
+
+If invoked as `/feature <id>` (no brief) or the user says "continue feature run \<id\>" / "resume \<id\>":
+
+1. Read `.feature_runs/<id>/state.json`. If missing, tell the user the run id wasn't found and ask if they meant to start a new run.
+2. If `last_completed_step` is `"done"` → tell the user the run is already done; ask if they want to start a new run from the same brief or another action.
+3. If `last_completed_step` is `"aborted"` → tell the user the run was aborted; ask if they want to start a new run.
+4. Otherwise, map `last_completed_step` to the next step using this table — then dispatch from there. **Don't re-run completed steps.**
+
+| `last_completed_step` | Resume at |
+| --- | --- |
+| `init` | Step 1 (map) |
+| `map_fresh` | Step 2 (research) |
+| `research_done` | Step 3 (story) |
+| `story_drafted` | CP1 — re-show the AskUserQuestion |
+| `spec_invalid` | Step 4 (spec) with feedback prepended ("the prior spec was malformed: …") |
+| `spec_drafted` | Step 5 (rubric) |
+| `rubric_drafted` | CP2 — re-show the AskUserQuestion |
+| `backend_complete` | Step 7 (backend validator) |
+| `backend_validated` | Step 8 (frontend lane) |
+| `frontend_complete` | Step 9 (final validator) |
+| `frontend_validated` | CP3 — re-show the AskUserQuestion |
+| `validated` | CP3 — re-show the AskUserQuestion. This state is set after step 9 regardless of whether the frontend lane ran, so it's the canonical "ready for CP3" marker — `frontend_validated` is a synonym used only when frontend was the most recent lane. |
+
+Before resuming, read the relevant artifacts that step needs (issue, spec, rubric, lane preambles) so the dispatched subagent has full context. If an artifact named in `state.json` is missing on disk, treat that as a corrupted run and ask the user whether to retry or abort.
+
+## State persistence (for headless interop)
+
+After every step, write `.feature_runs/<id>/state.json` with these fields (the same 11-field schema the bash script uses):
+
+```json
+{
+  "id": "<id>",
+  "brief_path": ".feature_runs/<id>/brief.md",
+  "issue_path": "issues/<id>.md",
+  "research_path": "issues/research/<id>.md",
+  "spec_path": "issues/<id>.spec.md",
+  "rubric_path": "issues/<id>.rubric.md",
+  "lanes": { "backend": { "allowlist": [...], "status": "complete" } },
+  "validator_findings": "",
+  "last_completed_step": "rubric_drafted",
+  "started_at": "<ISO-8601>",
+  "updated_at": "<ISO-8601>"
+}
+```
+
+This lets a user abort the in-conversation flow and pick up via `feature.sh continue <id>` later, and vice versa. **State documented step values** (use these exact strings): `init`, `map_fresh`, `research_done`, `story_drafted`, `spec_drafted`, `spec_invalid`, `rubric_drafted`, `backend_complete`, `backend_validated`, `frontend_complete`, `frontend_validated`, `validated`, `done`, `aborted`.
+
+## Headless / AFK alternative
+
+When the user explicitly says "AFK" / "headless" / "overnight" / "close the laptop" — exit the in-conversation flow and bash-invoke:
 
 ```bash
-"${CLAUDE_SKILL_DIR}/bin/feature.sh" continue <id> --accept             # accept and continue
-"${CLAUDE_SKILL_DIR}/bin/feature.sh" continue <id> --redo "<feedback>"  # rerun last step with feedback
-"${CLAUDE_SKILL_DIR}/bin/feature.sh" abort <id>                          # give up; release LOCK
-"${CLAUDE_SKILL_DIR}/bin/feature.sh" status <id>                         # print state.json in human form
+"${CLAUDE_SKILL_DIR}/bin/feature.sh" start "<brief>"
 ```
 
-## What the chain does
-
-Three checkpoints (CP1 after story, CP2 after spec+rubric, CP3 before PR). Ten steps between them. See `docs/plans/feature-factory.md` §F for the full chain — don't restate it here. Lessons in `docs/lessons-learned/feature-factory-build.md`.
-
-### Invocation count vs. checkpoint count
-
-In practice the chain has **three named checkpoints (CP1/CP2/CP3) but four `continue --accept` invocations** before `done`. The fourth pause happens at `state = backend_validated` — the orchestrator pauses between the backend and frontend lanes so the user can abort if the backend's commit looked wrong before frontend touches the codebase. This is intentional (an inter-lane gate, not a UX oversight) but isn't paged with a "CHECKPOINT" banner. When you explain `/feature` to a user, tell them: "5 total invocations — start, then 4 × continue. The third pause is silent." See lessons-learned Round 4 for the design rationale.
-
-## Dependencies
-
-This skill assumes the following have been merged (issues 001, 002, 003, 004 of the feature-factory build):
-
-- **001** — `write-a-spec` skill exists at `plugins/agentic-engineering/skills/write-a-spec/SKILL.md`. The orchestrator's Step 4 dispatches `claude -p` with the `write-a-spec` skill prompt to produce the technical brief sidecar.
-- **002** — `/adversarial-review` honors `ADVERSARIAL_REVIEW_REPORT_ONLY=1` and `ADVERSARIAL_REVIEW_TARGETS=<colon-globs>` env vars. The orchestrator's Steps 7 and 9 set both before dispatching the validator.
-- **003** — `/work-issues` honors a lane preamble prepended to its prompt (`## Allowlist` + escape valve). The orchestrator's Steps 6 and 8 build the preamble at `/tmp/feature-runs/<id>/lane-<lane>.prompt.md` and invoke `bin/loop.sh` with `WORK_ISSUES_PROMPT=$lane_prompt`.
-- **004** — `work-issues-lib.sh` exposes `allowlist_for <spec> <lane>` and `route_findings <findings> <spec>`. The orchestrator sources `bin/feature-helpers.sh`, which sources `work-issues-lib.sh` for both functions.
-
-If any of these aren't merged yet, the chain will fail at the corresponding step. Check before running.
-
-## CLAUDE.md `## Lane boundaries`
-
-The orchestrator's Steps 6 and 8 build per-lane `WORK_ISSUES_PROMPT` files from the spec's `### <Lane>` H3 headings. Those labels must match names defined in `CLAUDE.md`'s `## Lane boundaries` section. If `CLAUDE.md` has no such section, `write-a-spec` (Step 4) will surface this in the Risks section of the spec; review at Checkpoint 2 before continuing.
+The script does its own orchestration with `claude -p` subprocesses (cache-hot via `--resume <parent_sid> --fork-session` after the c873e77 primer optimization) and pauses by exiting between steps. User resumes via `feature.sh continue <id> --accept`, `--redo`, `abort`, `status`.
 
 ## Failure modes
 
-See `docs/plans/feature-factory.md` §G. Summary:
-
-- Any `claude -p` non-zero → orchestrator exits non-zero; `last_completed_step` unchanged; user reruns `continue <id>`.
-- `write-a-spec` returns no `paths` blocks → `last_completed_step = "spec_invalid"`; user runs `continue <id> --redo "<feedback about format>"`.
-- `bin/loop.sh` hits iteration cap → lane status = `partial`; surface at Checkpoint 3.
-- Validator dispatch crashes → `validator_findings = "DISPATCH_FAILED"`; surface at the next checkpoint.
-- Builder writes `## Allowlist additions requested` to the issue file → lane stops; surface at Checkpoint 3.
-- Concurrent `start` → second invocation refuses with a clear message naming the active run dir.
-
-## State persistence
-
-`.feature_runs/<id>/state.json` is the source of truth. Fields: `id`, `brief_path`, `issue_path`, `research_path`, `spec_path`, `rubric_path`, `lanes`, `validator_findings`, `last_completed_step`, `started_at`, `updated_at`. The script reads it on every `continue`, dispatches the next step based on `last_completed_step`, and writes it back atomically before exiting any step. Resumable across terminal close, machine reboot, week-long pauses.
-
-## Env overrides (for testing / advanced use)
-
-- `CLAUDE_CMD` — command invoked for child dispatches. Default: `claude`. Set to a stub in tests.
-- `LOOP_SH_CMD` — command invoked for lane builds. Default: `../../work-issues/bin/loop.sh` (relative to `bin/feature.sh`).
-- `FEATURE_RUNS_DIR` — root of run state. Default: `.feature_runs` at the repo root.
-- `FEATURE_REPO_ROOT` — where the orchestrator writes spec/rubric/issue/research files. Default: `git rev-parse --show-toplevel` (or `$PWD` if not a git repo). Override in tests so artifacts don't leak into the real `issues/` dir.
+- **Subagent returns empty / malformed**: re-dispatch with a clearer prompt. Cap at 2 retries per step.
+- **`allowlist_for` returns empty** on a step-6/8 invocation: spec is malformed. Re-dispatch step 4 with feedback about the paths-block format.
+- **Critical validator findings in a lane**: dispatch the lane again with findings prepended. Cap at 2 loopback iterations; if still Critical, surface at the next checkpoint and let the user decide.
+- **TaskCreate not available** (older Claude Code without TaskCreate): skip the checklist; orchestrate without progress tracking.
 
 ## Hard rules
 
-- Slash-only. `disable-model-invocation: true` in frontmatter — the model must not auto-invoke this skill based on conversational context. Only fire on explicit `/feature` (or another orchestrator skill calling it intentionally).
-- Don't replicate the chain in conversation. The whole point of the orchestrator is that each step runs in a fresh `claude -p` context so it doesn't drift. Bash-invoke `"${CLAUDE_SKILL_DIR}/bin/feature.sh"`.
-- Never modify `${CLAUDE_SKILL_DIR}/bin/feature.sh` / `feature-helpers.sh` mid-chain. If the orchestrator is broken, abort the run, fix the script, start a new run.
+- **Slash-only.** `disable-model-invocation: true` in frontmatter — the model must not auto-invoke. Only fire on explicit `/feature`.
+- **Don't bash-invoke `feature.sh` from inside an in-conversation `/feature` run** unless the user explicitly opts into headless. The two modes are alternatives, not nested.
+- **Don't replicate spec/rubric/work-issues skill logic inline.** Always dispatch the skill's own subagent so the skill's discipline (path rules, rubric < contract, lane preamble) applies.
+- **Never edit files in step 6/8 yourself.** That work belongs to the lane subagent; you're only orchestrating.
+- **Surface every Agent response inline.** That's the whole point of in-conversation mode — the user sees what each step did.
