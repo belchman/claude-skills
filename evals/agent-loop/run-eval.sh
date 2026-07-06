@@ -19,6 +19,8 @@
 #                      references/doctor-checks.md
 set -u
 
+export AL_NO_FLEET_REGISTER=1   # eval worktrees must never enter the user's fleet registry
+
 EVAL_DIR=$(cd "$(dirname "$0")" && pwd)
 . "$EVAL_DIR/lib.sh"
 

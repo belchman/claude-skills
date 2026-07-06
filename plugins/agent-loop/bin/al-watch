@@ -1,0 +1,1950 @@
+#!/usr/bin/env python3
+"""al-watch — local real-time dashboard for an agent-loop repo, or the fleet.
+
+Usage: al-watch [<repo>] [--port N] [--allow-actions]
+
+Stdlib only. Binds 127.0.0.1 ONLY.
+
+Single-repo mode (repo positional supplied) serves:
+  GET  /            embedded HTML dashboard (dark monospace)
+  GET  /api/state   JSON snapshot of .claude/agent-loop/ files
+  GET  /events      SSE: verbatim audit.jsonl replay + live follow,
+                    state snapshots on change, heartbeat comments
+  POST /api/approve plan-approve via al-state   (requires --allow-actions)
+  POST /api/reject  plan-reject '<reason>'      (requires --allow-actions)
+
+Fleet mode (bare invocation, no repo arg) reads the machine-wide registry
+($AL_FLEET_REGISTRY or ~/.claude/agent-loop/fleet.list — an append-only file
+of repo roots written by al-state init/lease-acquire and al-loop.sh; the
+server NEVER writes it) and serves:
+  GET  /                    fleet page
+  GET  /api/fleet           slim per-repo snapshots (flags + needs_human,
+                            al-fleet's conditions; archive stats)
+  GET  /events              SSE: `event: fleet` slim array on change + heartbeats
+  GET  /events?repo=<path>  single-repo SSE drill-down (registry members only)
+  GET  /api/state?repo=<path>   single-repo snapshot (registry members only)
+  GET  /api/archive?repo=<path>[&goal=<id>]  archived-goal list / detail
+  POST /api/approve|/api/reject with {"repo": ...} addressed to a registry member
+
+POSTs (both modes) require Content-Type: application/json and a
+127.0.0.1/localhost Host header. Read-only by default: without
+--allow-actions the POST endpoints answer 403. Actions run <bindir>/al-state
+with AL_ACTOR="<user>@al-watch" so the journal attributes them to the
+dashboard, never to a bare shell user.
+"""
+import argparse
+import getpass
+import json
+import os
+import subprocess
+import sys
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
+
+BIN_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_PORT = 4177
+POLL_SECS = 1.0
+HEARTBEAT_SECS = 15.0
+QUIET = not os.environ.get("AL_WATCH_DEBUG")
+
+
+# --- snapshot assembly ---------------------------------------------------------
+
+def al_dir(repo):
+    return os.path.join(repo, ".claude", "agent-loop")
+
+
+def read_json(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def read_text(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def read_int(path):
+    txt = read_text(path)
+    if txt is None:
+        return 0
+    try:
+        return int(txt.strip() or 0)
+    except ValueError:
+        return 0
+
+
+def snapshot(repo, allow_actions):
+    """Assemble the /api/state JSON. Missing files -> nulls, never a 500."""
+    d = al_dir(repo)
+    return {
+        "repo": repo,
+        "allow_actions": allow_actions,
+        "goal": read_json(os.path.join(d, "goal.json")),
+        "state": read_json(os.path.join(d, "state.json")),
+        "goal_md": read_text(os.path.join(d, "GOAL.md")),
+        "memory_md": read_text(os.path.join(d, "MEMORY.md")),
+        "policy": read_json(os.path.join(d, "policy.json")),
+        "consecutive_errors": read_int(os.path.join(d, "logs", "consecutive_errors")),
+        "lease": read_json(os.path.join(d, ".lease", "owner.json")),
+    }
+
+
+# --- fleet mode: registry + slim snapshots --------------------------------------
+
+def default_registry():
+    return os.environ.get("AL_FLEET_REGISTRY") or os.path.join(
+        os.path.expanduser("~"), ".claude", "agent-loop", "fleet.list")
+
+
+def read_registry(path):
+    """Registry lines -> ordered, deduped, realpath'd, existing dirs only.
+    Strictly read-only: dead paths are pruned from VIEW, never from the file."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    seen, out = set(), []
+    for ln in lines:
+        ln = ln.strip()
+        if not ln:
+            continue
+        rp = os.path.realpath(ln)
+        if rp in seen:
+            continue
+        seen.add(rp)
+        if os.path.isdir(rp):
+            out.append(rp)
+    return out
+
+
+# lifetime archive stats are cached per repo, keyed on the archive dir's
+# mtime — archived goals only change when a goal is closed out, so the
+# per-poll fleet snapshot never re-walks archives that didn't move.
+_ARCHIVE_STATS_CACHE = {}
+
+
+def archive_stats(repo):
+    arch = os.path.join(al_dir(repo), "archive")
+    try:
+        mtime = os.stat(arch).st_mtime
+    except OSError:
+        return {"goals": 0, "tokens": 0}
+    cached = _ARCHIVE_STATS_CACHE.get(repo)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    goals, tokens = 0, 0
+    try:
+        names = os.listdir(arch)
+    except OSError:
+        names = []
+    for name in names:
+        d = os.path.join(arch, name)
+        if not os.path.isdir(d):
+            continue
+        goals += 1
+        st = read_json(os.path.join(d, "state.json")) or {}
+        tt = st.get("tokens_total")
+        if isinstance(tt, (int, float)):
+            tokens += int(tt)
+    stats = {"goals": goals, "tokens": tokens}
+    _ARCHIVE_STATS_CACHE[repo] = (mtime, stats)
+    return stats
+
+
+def slim_snapshot(repo):
+    """One fleet card's worth of data. Deliberately SLIM: no goal_md /
+    memory_md / policy bodies — drill-down uses the single-repo endpoints.
+    flags + needs_human reproduce al-fleet's conditions exactly."""
+    d = al_dir(repo)
+    goal = read_json(os.path.join(d, "goal.json")) or {}
+    state = read_json(os.path.join(d, "state.json")) or {}
+    plan = state.get("plan") or {}
+    lv = state.get("last_verdict")
+    errs = read_int(os.path.join(d, "logs", "consecutive_errors"))
+    it, mx = state.get("iteration"), goal.get("max_iterations")
+    tt, bg = state.get("tokens_total"), goal.get("budget_tokens")
+    flags = []
+    if plan.get("status") == "awaiting-human":
+        flags.append("awaiting-approval")
+    if state.get("paused_by_stall") is True:
+        flags.append("stalled")
+    if isinstance(it, int) and isinstance(mx, int) and mx > 0 and it >= mx:
+        flags.append("at-ceiling")
+    if isinstance(tt, (int, float)) and isinstance(bg, (int, float)) \
+            and bg > 0 and tt >= bg:
+        flags.append("over-budget")
+    if errs >= 3:
+        flags.append("breaker-open")
+    dm = state.get("done_means") or {}
+    return {
+        "repo": repo,
+        "goal": {"id": goal.get("id"), "status": goal.get("status"),
+                 "max_iterations": mx, "budget_tokens": bg},
+        "done_means": {"done": sum(1 for v in dm.values() if v), "total": len(dm)},
+        "iteration": it,
+        "plan_status": plan.get("status"),
+        "plan_tasks": len(plan.get("tasks") or []),
+        "plan_assumptions": len(plan.get("assumptions") or []),
+        "tokens_total": tt,
+        "paused_by_stall": state.get("paused_by_stall") is True,
+        "last_verdict_pass": lv.get("pass") if isinstance(lv, dict) else None,
+        "consecutive_errors": errs,
+        "lease": os.path.exists(os.path.join(d, ".lease", "owner.json")),
+        "flags": flags,
+        "needs_human": bool(flags),
+        "archive": archive_stats(repo),
+    }
+
+
+def archive_list(repo):
+    """[{goal, tokens_total, done_means summary, has_goal_md}] per archive dir."""
+    arch = os.path.join(al_dir(repo), "archive")
+    out = []
+    try:
+        names = sorted(os.listdir(arch))
+    except OSError:
+        names = []
+    for name in names:
+        d = os.path.join(arch, name)
+        if not os.path.isdir(d):
+            continue
+        st = read_json(os.path.join(d, "state.json")) or {}
+        dm = st.get("done_means") or {}
+        if not isinstance(dm, dict):
+            dm = {}
+        out.append({
+            "goal": name,
+            "tokens_total": st.get("tokens_total"),
+            "done_means": {"done": sum(1 for v in dm.values() if v),
+                           "total": len(dm)},
+            "has_goal_md": os.path.exists(os.path.join(d, "GOAL.md")),
+        })
+    return out
+
+
+def archive_detail(repo, goal_id):
+    """{goal_md, state, journal:[lines]} for one archived goal, or None.
+    Path-joins strictly on the basename — a goal id can never traverse out."""
+    name = os.path.basename(goal_id or "")
+    d = os.path.join(al_dir(repo), "archive", name)
+    if not name or name in (".", "..") or not os.path.isdir(d):
+        return None
+    txt = read_text(os.path.join(d, "audit.jsonl"))
+    journal = [ln for ln in txt.splitlines() if ln.strip()] if txt else []
+    return {
+        "goal": name,
+        "goal_md": read_text(os.path.join(d, "GOAL.md")),
+        "state": read_json(os.path.join(d, "state.json")),
+        "journal": journal,
+    }
+
+
+# --- actions -------------------------------------------------------------------
+
+def run_al_state(repo, args):
+    """Run <bindir>/al-state --state <repo state.json> <args...> as *@al-watch."""
+    cmd = [os.path.join(BIN_DIR, "al-state"),
+           "--state", os.path.join(al_dir(repo), "state.json")] + args
+    env = dict(os.environ)
+    env["AL_ACTOR"] = "%s@al-watch" % getpass.getuser()
+    try:
+        proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=60)
+        out = (proc.stdout or "") + (proc.stderr or "")
+        return proc.returncode == 0, out
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, str(e)
+
+
+# --- embedded dashboard ---------------------------------------------------------
+
+DASHBOARD_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>agent-loop watch</title>
+<link id="fav" rel="icon" href="data:,">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+:root{
+  --void:#04070a; --p0:#080e13; --p1:#0c141b; --p2:#101b23;
+  --line:#1c2b34; --line2:#2c4350;
+  --ink:#d9e8e6; --dim:#647d88; --faint:#3a505b;
+  --aqua:#5ff2dc; --aqua-glo:rgba(95,242,220,.45);
+  --amber:#ffb454; --amber-glo:rgba(255,180,84,.4);
+  --red:#ff5468;  --red-glo:rgba(255,84,104,.45);
+  --violet:#b48cff;
+  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --disp:'Chakra Petch',var(--mono);
+  --ch:10px; /* chamfer size */
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--void); color:var(--ink);
+  font:13px/1.55 var(--mono);
+  overflow:hidden;
+}
+/* ---------- atmosphere: grid + scanlines + vignette ---------- */
+#fx{position:fixed;inset:0;pointer-events:none;z-index:90}
+#fx::before{content:"";position:absolute;inset:0;
+  background:
+    radial-gradient(1200px 700px at 70% -10%, rgba(95,242,220,.05), transparent 60%),
+    radial-gradient(900px 600px at 0% 110%, rgba(255,180,84,.04), transparent 55%),
+    repeating-linear-gradient(0deg, rgba(95,242,220,.028) 0 1px, transparent 1px 44px),
+    repeating-linear-gradient(90deg, rgba(95,242,220,.028) 0 1px, transparent 1px 44px);
+}
+#fx::after{content:"";position:absolute;inset:0;
+  background:repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px);
+  mix-blend-mode:multiply;
+}
+::selection{background:var(--aqua);color:var(--void)}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:var(--line2);border-radius:0}
+::-webkit-scrollbar-track{background:transparent}
+
+/* ---------- chamfered instrument surfaces ---------- */
+.cham{
+  background:linear-gradient(180deg,var(--p1),var(--p0));
+  border:1px solid var(--line);
+  clip-path:polygon(var(--ch) 0,100% 0,100% calc(100% - var(--ch)),calc(100% - var(--ch)) 100%,0 100%,0 var(--ch));
+  position:relative;
+}
+.brk{position:relative}
+.brk::before,.brk::after{content:"";position:absolute;width:14px;height:14px;pointer-events:none;opacity:.9}
+.brk::before{top:-1px;left:-1px;border-top:1px solid var(--aqua);border-left:1px solid var(--aqua)}
+.brk::after{bottom:-1px;right:-1px;border-bottom:1px solid var(--aqua);border-right:1px solid var(--aqua)}
+
+/* ---------- app shell ---------- */
+#app{display:flex;flex-direction:column;height:100vh;position:relative;z-index:1}
+#alertbar{display:none;align-items:center;gap:12px;padding:7px 16px;
+  font:600 12px/1 var(--disp);letter-spacing:2px;text-transform:uppercase;
+  background:linear-gradient(90deg, rgba(255,180,84,.16), rgba(255,180,84,.05));
+  border-bottom:1px solid var(--amber);color:var(--amber);
+  animation:alertpulse 2.2s ease-in-out infinite}
+#alertbar.red{background:linear-gradient(90deg, rgba(255,84,104,.18), rgba(255,84,104,.05));
+  border-color:var(--red);color:var(--red)}
+#alertbar .sp{flex:1}
+#alertbar button{margin-left:8px}
+@keyframes alertpulse{0%,100%{filter:brightness(1)}50%{filter:brightness(1.35)}}
+
+header{display:flex;align-items:center;gap:18px;padding:10px 16px 8px;
+  border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(16,27,35,.9),rgba(8,14,19,.75))}
+#mark{font:700 17px/1 var(--disp);letter-spacing:3px;white-space:nowrap;
+  color:var(--ink);text-shadow:0 0 18px var(--aqua-glo);animation:boot-flicker 1.6s steps(1) 1}
+#mark b{color:var(--aqua)}
+#mark small{display:block;font:500 9px/1.6 var(--disp);letter-spacing:5px;color:var(--dim)}
+@keyframes boot-flicker{0%,7%,11%{opacity:0}3%,9%,14%,100%{opacity:1}}
+
+/* phase pipeline strip */
+#phases{display:flex;align-items:center;gap:4px;margin:0 auto;font:600 10px/1 var(--disp);letter-spacing:1.6px}
+.ph{padding:5px 12px;color:var(--faint);border:1px solid var(--line);background:var(--p0);
+  clip-path:polygon(7px 0,100% 0,calc(100% - 7px) 100%,0 100%);transition:all .25s}
+.ph.done{color:var(--dim);border-color:var(--line2)}
+.ph.active{color:var(--void);background:var(--aqua);border-color:var(--aqua);
+  box-shadow:0 0 16px var(--aqua-glo);animation:phasepulse 1.6s ease-in-out infinite}
+.ph.gatehold{background:var(--amber);border-color:var(--amber);box-shadow:0 0 16px var(--amber-glo);color:var(--void)}
+@keyframes phasepulse{50%{filter:brightness(1.25)}}
+#gate{width:9px;height:9px;transform:rotate(45deg);border:1px solid var(--line2);margin:0 2px;transition:all .3s}
+#gate.hold{background:var(--amber);border-color:var(--amber);box-shadow:0 0 12px var(--amber-glo)}
+#gate.open{background:var(--aqua);border-color:var(--aqua);box-shadow:0 0 10px var(--aqua-glo)}
+
+#hud{display:flex;align-items:center;gap:14px;font-size:11px;color:var(--dim);white-space:nowrap}
+.led{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--faint);vertical-align:-1px;margin-right:5px}
+.led.aqua{background:var(--aqua);box-shadow:0 0 10px var(--aqua-glo);animation:breathe 2.4s ease-in-out infinite}
+.led.red{background:var(--red);box-shadow:0 0 10px var(--red-glo)}
+.led.amber{background:var(--amber);box-shadow:0 0 10px var(--amber-glo)}
+@keyframes breathe{50%{opacity:.45}}
+#clock{font:600 12px/1 var(--disp);letter-spacing:1px;color:var(--ink)}
+.chip{border:1px solid var(--line2);padding:2px 8px;font-size:10px;letter-spacing:1px;text-transform:uppercase}
+.chip.amber{color:var(--amber);border-color:var(--amber)}
+.chip.aqua{color:var(--aqua);border-color:var(--aqua)}
+
+#shell{display:flex;flex:1;min-height:0}
+nav{width:64px;display:flex;flex-direction:column;align-items:center;gap:6px;
+  padding:14px 0;border-right:1px solid var(--line);background:rgba(8,14,19,.6)}
+nav button{width:46px;height:46px;border:1px solid var(--line);background:var(--p0);color:var(--dim);
+  font:600 8.5px/1.25 var(--disp);letter-spacing:.5px;cursor:pointer;text-transform:uppercase;
+  clip-path:polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 6px);
+  transition:all .2s}
+nav button .ico{display:block;font-size:15px;line-height:1.3;font-family:var(--mono)}
+nav button:hover{color:var(--ink);border-color:var(--line2)}
+nav button.on{color:var(--void);background:var(--aqua);border-color:var(--aqua);box-shadow:0 0 14px var(--aqua-glo)}
+nav .gap{flex:1}
+nav .hint{font-size:9px;color:var(--faint);text-align:center;line-height:1.7}
+
+main{flex:1;min-width:0;overflow:hidden;position:relative}
+.view{position:absolute;inset:0;padding:14px 16px;overflow:auto;display:none;
+  animation:viewin .28s ease-out}
+.view.on{display:block}
+@keyframes viewin{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* boot stagger */
+.boot>*{animation:powerup .5s both}
+.boot>*:nth-child(1){animation-delay:.05s}.boot>*:nth-child(2){animation-delay:.12s}
+.boot>*:nth-child(3){animation-delay:.19s}.boot>*:nth-child(4){animation-delay:.26s}
+.boot>*:nth-child(5){animation-delay:.33s}
+@keyframes powerup{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+h2{font:600 10px/1 var(--disp);letter-spacing:3px;text-transform:uppercase;color:var(--dim);
+  margin-bottom:10px;display:flex;align-items:center;gap:8px}
+h2::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--line2),transparent)}
+
+/* ---------- OVERVIEW ---------- */
+#hero{display:flex;gap:14px;align-items:stretch;margin-bottom:14px}
+#idplate{flex:1;padding:16px 18px}
+#idplate .lbl{font:600 9px/1 var(--disp);letter-spacing:4px;color:var(--dim);text-transform:uppercase}
+#goalid{font:700 26px/1.25 var(--disp);letter-spacing:1px;color:var(--ink);
+  text-shadow:0 0 24px var(--aqua-glo);word-break:break-all}
+#goalstatus{margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.stamp{font:700 11px/1 var(--disp);letter-spacing:2px;padding:4px 10px;border:1px solid;text-transform:uppercase}
+.stamp.aqua{color:var(--aqua);border-color:var(--aqua);box-shadow:inset 0 0 12px rgba(95,242,220,.12)}
+.stamp.amber{color:var(--amber);border-color:var(--amber)}
+.stamp.red{color:var(--red);border-color:var(--red)}
+.stamp.dim{color:var(--dim);border-color:var(--line2)}
+#ringbox{width:190px;padding:12px;display:flex;flex-direction:column;align-items:center;justify-content:center}
+#ring{position:relative;width:120px;height:120px}
+#ring svg{transform:rotate(-90deg)}
+#ring .num{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  font:700 22px/1 var(--disp);color:var(--aqua);text-shadow:0 0 14px var(--aqua-glo)}
+#ring .num small{font:600 8px/2 var(--disp);letter-spacing:2px;color:var(--dim)}
+#tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:10px;margin-bottom:14px}
+.tile{padding:9px 12px}
+.tile .k{font:600 8.5px/1 var(--disp);letter-spacing:2px;color:var(--dim);text-transform:uppercase}
+.tile .v{font:600 17px/1.4 var(--disp);margin-top:4px;color:var(--ink);word-break:break-word}
+.tile .v small{font:500 11px var(--mono);color:var(--dim)}
+.tile.aqua .v{color:var(--aqua)} .tile.amber .v{color:var(--amber)}
+.tile.red .v{color:var(--red);animation:alertpulse 1.6s infinite} .tile.dim .v{color:var(--dim)}
+#ovcols{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.panel{padding:12px 14px}
+#donemeans li{list-style:none;padding:4px 0;border-bottom:1px dashed var(--line);display:flex;gap:9px;align-items:baseline}
+#donemeans li:last-child{border:none}
+.tickbox{font:700 12px var(--mono)}
+.tickbox.on{color:var(--aqua);text-shadow:0 0 10px var(--aqua-glo)}
+.tickbox.off{color:var(--faint)}
+#donemeans .done{color:var(--dim);text-decoration:line-through;text-decoration-color:var(--faint)}
+#plan .task{padding:5px 0 5px 10px;border-left:2px solid var(--line2);margin:5px 0}
+#plan .assump{color:var(--amber);padding:2px 0 2px 10px}
+.kind{font:700 8.5px/1 var(--disp);letter-spacing:1.5px;padding:2px 7px;margin-right:7px;
+  text-transform:uppercase;color:var(--void);display:inline-block}
+.kind.test{background:var(--aqua)} .kind.impl{background:#6fb7ff} .kind.docs{background:var(--violet)} .kind.chore{background:var(--dim)}
+#actionrow{margin-top:10px;display:none;gap:10px}
+button.cta{font:700 11px/1 var(--disp);letter-spacing:2px;text-transform:uppercase;cursor:pointer;
+  padding:9px 20px;border:1px solid var(--aqua);color:var(--aqua);background:rgba(95,242,220,.07);
+  clip-path:polygon(8px 0,100% 0,calc(100% - 8px) 100%,0 100%);transition:all .15s}
+button.cta:hover{background:var(--aqua);color:var(--void);box-shadow:0 0 18px var(--aqua-glo)}
+button.cta.red{border-color:var(--red);color:var(--red);background:rgba(255,84,104,.07)}
+button.cta.red:hover{background:var(--red);color:var(--void);box-shadow:0 0 18px var(--red-glo)}
+button.cta.amber{border-color:var(--amber);color:var(--amber);background:rgba(255,180,84,.08)}
+button.cta.amber:hover{background:var(--amber);color:var(--void)}
+button.cta:disabled{opacity:.35;pointer-events:none}
+
+/* ---------- TELEMETRY ---------- */
+#telebar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.fchip{font:600 9px/1 var(--disp);letter-spacing:1.5px;text-transform:uppercase;cursor:pointer;
+  padding:5px 10px;border:1px solid var(--line2);color:var(--dim);background:var(--p0);transition:all .15s}
+.fchip.on{color:var(--void);background:var(--aqua);border-color:var(--aqua)}
+#q{flex:1;min-width:140px;background:var(--p0);border:1px solid var(--line2);color:var(--ink);
+  font:12px var(--mono);padding:6px 10px;outline:none}
+#q:focus{border-color:var(--aqua);box-shadow:0 0 10px rgba(95,242,220,.15)}
+#pausebtn{min-width:86px}
+#feedwrap{display:flex;gap:12px;height:calc(100% - 52px)}
+#feed{flex:1;overflow-y:auto;min-width:0}
+.row{display:flex;gap:10px;align-items:baseline;padding:5px 8px;border-bottom:1px solid var(--line);
+  cursor:pointer;transition:background .15s}
+.row:hover{background:rgba(95,242,220,.05)}
+.row.sel{background:rgba(95,242,220,.09);border-left:2px solid var(--aqua)}
+.row.fresh{animation:phosphor 1.4s ease-out}
+@keyframes phosphor{0%{background:rgba(95,242,220,.35);box-shadow:inset 0 0 24px var(--aqua-glo)}100%{background:transparent}}
+.row .at{color:var(--faint);font-size:10px;white-space:nowrap;width:64px}
+.row .sum{flex:1;word-break:break-word}
+.row .actor{color:var(--faint);font-size:10px}
+.ebadge{font:700 8.5px/1 var(--disp);letter-spacing:1px;padding:2.5px 7px;text-transform:uppercase;
+  color:var(--void);white-space:nowrap}
+.e-aqua{background:var(--aqua)} .e-amber{background:var(--amber)} .e-red{background:var(--red)}
+.e-violet{background:var(--violet)} .e-dim{background:var(--dim)}
+#inspector{width:0;overflow:hidden;transition:width .25s ease;flex-shrink:0}
+#inspector.open{width:400px}
+#inspector .inner{width:400px;height:100%;display:flex;flex-direction:column;padding:12px}
+#insphead{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+#insphead .x{margin-left:auto;cursor:pointer;color:var(--dim);border:1px solid var(--line2);
+  padding:2px 9px;background:none;font:12px var(--mono)}
+#insphead .x:hover{color:var(--red);border-color:var(--red)}
+#inspmeta{font-size:10px;color:var(--dim);margin-bottom:8px;line-height:1.8}
+#inspjson{flex:1;overflow:auto;background:var(--void);border:1px solid var(--line);
+  padding:10px;font-size:11px;line-height:1.6;white-space:pre;color:var(--aqua)}
+.jkey{color:var(--ink)} .jstr{color:var(--amber)} .jnum{color:var(--violet)} .jlit{color:var(--red)}
+
+/* ---------- CONTRACT / MEMORY ---------- */
+.doc{max-width:900px}
+.doc h3{font:700 13px/2.4 var(--disp);letter-spacing:2px;color:var(--aqua);text-transform:uppercase;
+  border-bottom:1px solid var(--line);margin-top:10px}
+.doc li{margin-left:18px;padding:2px 0;color:var(--ink)}
+.doc .x-on{color:var(--aqua)} .doc .x-off{color:var(--faint)}
+.doc p{padding:3px 0;color:var(--ink)}
+pre.raw{background:var(--void);border:1px solid var(--line);padding:12px;overflow:auto;
+  font-size:11px;line-height:1.6;color:var(--aqua);margin:8px 0 16px}
+
+/* ---------- toasts + modal ---------- */
+#toasts{position:fixed;right:18px;bottom:18px;z-index:200;display:flex;flex-direction:column;gap:8px}
+.toast{min-width:260px;max-width:420px;padding:10px 14px;font-size:12px;border:1px solid var(--aqua);
+  background:rgba(8,14,19,.95);color:var(--ink);box-shadow:0 0 22px rgba(95,242,220,.18);
+  clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px);
+  animation:toastin .25s ease-out}
+.toast b{font:700 10px/1.8 var(--disp);letter-spacing:2px;text-transform:uppercase;display:block}
+.toast.amber{border-color:var(--amber);box-shadow:0 0 22px rgba(255,180,84,.18)} .toast.amber b{color:var(--amber)}
+.toast.red{border-color:var(--red);box-shadow:0 0 22px var(--red-glo)} .toast.red b{color:var(--red)}
+.toast.aqua b{color:var(--aqua)}
+@keyframes toastin{from{opacity:0;transform:translateX(30px)}to{opacity:1;transform:none}}
+#veil{display:none;position:fixed;inset:0;background:rgba(2,5,7,.75);backdrop-filter:blur(3px);z-index:300;
+  align-items:center;justify-content:center}
+#veil.open{display:flex}
+#modal{width:min(620px,92vw);max-height:80vh;overflow:auto;padding:18px 20px;
+  animation:modalin .22s ease-out}
+@keyframes modalin{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:none}}
+#modal h2{margin-bottom:14px}
+#modal .task{padding:4px 0 4px 10px;border-left:2px solid var(--line2);margin:4px 0}
+#modal textarea{width:100%;min-height:84px;background:var(--void);border:1px solid var(--line2);
+  color:var(--ink);font:12px var(--mono);padding:9px;outline:none;margin:12px 0;resize:vertical}
+#modal textarea:focus{border-color:var(--amber)}
+#modal .btns{display:flex;gap:12px;justify-content:flex-end}
+kbd{border:1px solid var(--line2);padding:0 5px;font:10px var(--mono);color:var(--dim)}
+.empty{color:var(--faint);padding:24px;text-align:center;font:600 11px/2 var(--disp);letter-spacing:3px;text-transform:uppercase}
+</style>
+</head>
+<body>
+<div id="fx"></div>
+<div id="app">
+  <div id="alertbar">
+    <span id="alerttext"></span><span class="sp"></span>
+    <button class="cta amber" id="alertapprove" style="display:none">Approve</button>
+    <button class="cta red" id="alertreject" style="display:none">Reject</button>
+  </div>
+  <header>
+    <div id="mark">◢ AGENT<b>·</b>LOOP<small>WATCH CONSOLE</small></div>
+    <div id="phases">
+      <div class="ph" data-ph="WAKE">WAKE</div>
+      <div class="ph" data-ph="PLAN">PLAN</div>
+      <div id="gate" title="human approval gate"></div>
+      <div class="ph" data-ph="ACT">ACT</div>
+      <div class="ph" data-ph="VERIFY">VERIFY</div>
+      <div class="ph" data-ph="RECORD">RECORD</div>
+      <div class="ph" data-ph="OPTIMIZE">OPTIMIZE</div>
+    </div>
+    <div id="hud">
+      <span class="chip" id="modechip">read-only</span>
+      <span id="conn"><span class="led"></span>LINK</span>
+      <span id="clock">--:--:--</span>
+    </div>
+  </header>
+  <div id="shell">
+    <nav>
+      <button data-view="overview" class="on"><span class="ico">◈</span>OVER<br>VIEW</button>
+      <button data-view="telemetry"><span class="ico">≋</span>TELE<br>METRY</button>
+      <button data-view="contract"><span class="ico">⧉</span>CON<br>TRACT</button>
+      <button data-view="memory"><span class="ico">⌬</span>MEM<br>ORY</button>
+      <button data-view="archive"><span class="ico">◔</span>ARCH<br>IVE</button>
+      <div class="gap"></div>
+      <div class="hint"><kbd>1-4</kbd><br>views<br><kbd>/</kbd> find<br><kbd>p</kbd> pause</div>
+    </nav>
+    <main>
+      <section class="view on boot" id="view-overview">
+        <div id="hero">
+          <div id="idplate" class="cham brk">
+            <div class="lbl">Goal designation</div>
+            <div id="goalid">—</div>
+            <div id="goalstatus"></div>
+            <div style="margin-top:10px;font-size:11px;color:var(--dim)" id="repoline"></div>
+          </div>
+          <div id="ringbox" class="cham">
+            <div id="ring">
+              <svg width="120" height="120" viewBox="0 0 120 120">
+                <circle cx="60" cy="60" r="52" fill="none" stroke="#1c2b34" stroke-width="7"/>
+                <circle id="ringfg" cx="60" cy="60" r="52" fill="none" stroke="#5ff2dc" stroke-width="7"
+                  stroke-linecap="butt" stroke-dasharray="326.7" stroke-dashoffset="326.7"
+                  style="filter:drop-shadow(0 0 6px rgba(95,242,220,.6));transition:stroke-dashoffset .8s ease"/>
+              </svg>
+              <div class="num"><span id="ringpct">—</span><small>DONE-MEANS</small></div>
+            </div>
+          </div>
+        </div>
+        <div id="tiles"></div>
+        <div id="ovcols">
+          <div class="panel cham brk">
+            <h2>Done means</h2>
+            <ul id="donemeans"></ul>
+          </div>
+          <div class="panel cham brk">
+            <h2>Pending plan</h2>
+            <div id="plan" class="empty">NO PENDING PLAN</div>
+            <div id="actionrow">
+              <button class="cta" id="approve">Approve plan</button>
+              <button class="cta red" id="reject">Reject…</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-telemetry">
+        <div id="telebar">
+          <span class="fchip on" data-g="all">All</span>
+          <span class="fchip" data-g="plan">Plan</span>
+          <span class="fchip" data-g="gates">Gates</span>
+          <span class="fchip" data-g="work">Work</span>
+          <span class="fchip" data-g="verdict">Verdicts</span>
+          <span class="fchip" data-g="mind">Cognition</span>
+          <span class="fchip" data-g="sys">System</span>
+          <input id="q" type="text" placeholder="filter telemetry… ( / )">
+          <button class="cta" id="pausebtn">Pause</button>
+          <span style="font-size:10px;color:var(--dim)" id="feedcount"></span>
+        </div>
+        <div id="feedwrap">
+          <div id="feed" class="cham"></div>
+          <div id="inspector" class="cham">
+            <div class="inner">
+              <div id="insphead"><span class="ebadge e-aqua" id="inspbadge">event</span>
+                <button class="x" id="inspclose">✕</button></div>
+              <div id="inspmeta"></div>
+              <div id="inspjson"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-contract">
+        <div class="doc">
+          <h2>GOAL.md — the human contract</h2>
+          <div id="goalmd" class="empty">NO ACTIVE GOAL</div>
+          <h2 style="margin-top:22px">goal.json — the machine contract</h2>
+          <pre class="raw" id="goaljson">—</pre>
+          <h2>policy.json — org floors</h2>
+          <pre class="raw" id="policyjson">no policy file</pre>
+        </div>
+      </section>
+
+      <section class="view" id="view-memory">
+        <div class="doc">
+          <h2>MEMORY.md — what changes across sessions</h2>
+          <div id="memorymd" class="empty">NO MEMORY FILE</div>
+        </div>
+      </section>
+
+      <section class="view" id="view-archive">
+        <div id="archlist">
+          <h2>Past loops — archived goals</h2>
+          <div id="archgoals" class="empty">LOADING…</div>
+        </div>
+        <div id="archdetail" style="display:none">
+          <h2><span id="archdetname">—</span>
+            <button class="x" id="archback" style="margin-left:auto;cursor:pointer;color:var(--dim);border:1px solid var(--line2);padding:2px 9px;background:none;font:12px var(--mono)">◂ all past loops</button></h2>
+          <div id="archcols" style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+            <div class="panel cham brk"><h2>Contract (as archived)</h2><div id="archgoalmd" class="doc">—</div></div>
+            <div class="panel cham brk"><h2>Final state</h2><div id="archstate">—</div></div>
+          </div>
+          <div class="panel cham brk"><h2>Full journal (newest first)</h2>
+            <table id="archjournal" style="width:100%;border-collapse:collapse"></table></div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+<div id="toasts"></div>
+<div id="veil"><div id="modal" class="cham brk">
+  <h2 id="modaltitle">Approve plan</h2>
+  <div id="modalbody"></div>
+  <textarea id="modalreason" placeholder="rejection reason — becomes the next plan's input (required)" style="display:none"></textarea>
+  <div class="btns">
+    <button class="cta dim" id="modalcancel" style="border-color:var(--line2);color:var(--dim)">Cancel</button>
+    <button class="cta" id="modalgo">Confirm</button>
+  </div>
+</div></div>
+
+<script>
+"use strict";
+var ALLOW_ACTIONS = __ALLOW_ACTIONS__;
+var MAX_ROWS = 1000;
+var $ = function(id){ return document.getElementById(id); };
+/* inert ?repo= shim — active ONLY when the fleet console drills down.
+   Without the param every line below is a strict no-op. */
+var REPO_PARAM = new URLSearchParams(location.search).get("repo");
+function withRepo(url){
+  if (!REPO_PARAM) return url;
+  return url + (url.indexOf("?") >= 0 ? "&" : "?") +
+         "repo=" + encodeURIComponent(REPO_PARAM);
+}
+if (REPO_PARAM){
+  var _bk = document.createElement("a");
+  _bk.id = "back-to-fleet"; _bk.className = "back-to-fleet";
+  _bk.href = "/"; _bk.textContent = "◂ FLEET";
+  _bk.style.cssText = "font:600 10px/1 var(--disp);letter-spacing:2px;" +
+    "color:var(--aqua);text-decoration:none;border:1px solid var(--line2);" +
+    "padding:6px 10px;white-space:nowrap;align-self:center";
+  var _hdr = document.querySelector("header");
+  if (_hdr) _hdr.insertBefore(_bk, _hdr.firstChild);
+}
+function esc(s){
+  return String(s).replace(/[&<>"]/g, function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];
+  });
+}
+
+/* ================= app state ================= */
+var A = {
+  snap:null, rows:[], selected:null, paused:false, buffered:[],
+  filters:(localStorage.getItem("alw.filters")||"all").split(","),
+  q:"", view:localStorage.getItem("alw.view")||"overview",
+  live:false, replayUntil:Date.now()+1500, phase:"WAKE"
+};
+
+/* ================= view routing ================= */
+function setView(v){
+  A.view = v; localStorage.setItem("alw.view", v);
+  document.querySelectorAll(".view").forEach(function(s){ s.classList.remove("on"); });
+  document.querySelectorAll("nav button[data-view]").forEach(function(b){
+    b.classList.toggle("on", b.dataset.view === v);
+  });
+  var el = $("view-"+v); if (el) el.classList.add("on");
+  if (v === "archive") loadArchive();
+}
+
+/* ================= past loops (archive view) ================= */
+function loadArchive(){
+  $("archlist").style.display = "";
+  $("archdetail").style.display = "none";
+  fetch(withRepo("/api/archive")).then(function(r){ return r.json(); }).then(function(list){
+    if (!Array.isArray(list) || !list.length){
+      $("archgoals").innerHTML = "NO PAST LOOPS YET — closed goals archive here";
+      $("archgoals").className = "empty";
+      return;
+    }
+    $("archgoals").className = "";
+    $("archgoals").innerHTML = "";
+    list.forEach(function(g){
+      var dm = g.done_means || {};
+      var d = document.createElement("div");
+      d.className = "task"; d.style.cursor = "pointer";
+      d.innerHTML = '<b style="font-family:var(--disp);letter-spacing:1px;color:var(--aqua)">' +
+        esc(g.goal) + "</b>" +
+        ' <span style="color:var(--dim)">· ' +
+        esc(dm.done != null ? dm.done : "?") + "/" + esc(dm.total != null ? dm.total : "?") +
+        " done-means · " + esc(g.tokens_total == null ? "?" : g.tokens_total) + " tokens</span>";
+      d.addEventListener("click", function(){ openArchived(g.goal); });
+      $("archgoals").appendChild(d);
+    });
+  }).catch(function(){
+    $("archgoals").textContent = "archive unavailable";
+    $("archgoals").className = "empty";
+  });
+}
+function openArchived(goal){
+  var u = withRepo("/api/archive");
+  u += (u.indexOf("?") >= 0 ? "&" : "?") + "goal=" + encodeURIComponent(goal);
+  fetch(u).then(function(r){ return r.json(); }).then(function(d){
+    $("archlist").style.display = "none";
+    $("archdetail").style.display = "";
+    $("archdetname").textContent = d.goal || goal;
+    $("archgoalmd").innerHTML = d.goal_md ? mdlite(d.goal_md) : "—";
+    var st = d.state || {}, dm = st.done_means || {};
+    $("archstate").innerHTML =
+      "<div>iterations recorded: <b>" + esc(st.iteration == null ? "?" : st.iteration) + "</b></div>" +
+      "<div>tokens: <b>" + esc(st.tokens_total == null ? "?" : st.tokens_total) + "</b></div>" +
+      '<ul style="list-style:none;margin-top:8px;padding:0">' + Object.keys(dm).map(function(k){
+        return '<li><span class="tickbox ' + (dm[k] ? "on" : "off") + '">' +
+               (dm[k] ? "[✓]" : "[ ]") + "</span> " + esc(k) + "</li>";
+      }).join("") + "</ul>";
+    var tbl = $("archjournal"); tbl.innerHTML = "";
+    (d.journal || []).slice().reverse().forEach(function(line){
+      var obj; try { obj = JSON.parse(line); } catch(e){ obj = { event: "raw", raw: line }; }
+      var pd = (obj.payload && typeof obj.payload === "object") ? obj.payload : obj;
+      var td = 'style="padding:3px 8px 3px 0;border-bottom:1px solid var(--line);vertical-align:top"';
+      var tr = document.createElement("tr");
+      tr.innerHTML = '<td ' + td + '><span style="color:var(--faint);font-size:10px;white-space:nowrap">' +
+          esc((obj.at || "").replace(/^.*T/, "").replace("Z", "")) + "</span></td>" +
+        "<td " + td + '><span class="ebadge ' + (EBADGE[obj.event] || "e-dim") + '">' +
+          esc(obj.event || "?") + "</span></td>" +
+        "<td " + td + ">" + summarize(obj.event || "?", pd) +
+        (obj.actor ? ' <span style="color:var(--faint);font-size:10px">· ' + esc(obj.actor) + "</span>" : "") + "</td>";
+      tbl.appendChild(tr);
+    });
+  }).catch(function(){});
+}
+$("archback").addEventListener("click", loadArchive);
+document.querySelectorAll("nav button[data-view]").forEach(function(b){
+  b.addEventListener("click", function(){ setView(b.dataset.view); });
+});
+
+/* ================= clock + favicon + title ================= */
+setInterval(function(){
+  var d = new Date();
+  $("clock").textContent = d.toISOString().slice(11,19)+"Z";
+}, 1000);
+function setFavicon(color){
+  var c = document.createElement("canvas"); c.width = c.height = 16;
+  var g = c.getContext("2d");
+  g.fillStyle = "#04070a"; g.fillRect(0,0,16,16);
+  g.fillStyle = color; g.beginPath(); g.arc(8,8,4.2,0,7); g.fill();
+  g.shadowColor = color; g.shadowBlur = 5; g.fill();
+  $("fav").href = c.toDataURL("image/png");
+}
+function setAppStatus(kind, text){
+  document.title = (kind==="hold" ? "◆ GATE — " : kind==="alarm" ? "● ALERT — " :
+                    kind==="done" ? "✓ DONE — " : "") + "agent-loop watch";
+  setFavicon(kind==="alarm" ? "#ff5468" : kind==="hold" ? "#ffb454" : "#5ff2dc");
+}
+
+/* ================= toasts ================= */
+function toast(cls, head, body){
+  if (!A.live) return; // no toast storm during history replay
+  var t = document.createElement("div");
+  t.className = "toast "+cls;
+  t.innerHTML = "<b>"+esc(head)+"</b>"+esc(body||"");
+  $("toasts").appendChild(t);
+  setTimeout(function(){ t.style.opacity = "0"; t.style.transition = "opacity .4s"; }, 5600);
+  setTimeout(function(){ t.remove(); }, 6100);
+}
+
+/* ================= phase strip ================= */
+var PHASE_OF = {
+  goal_init:"WAKE", lease_takeover:"WAKE", interrupted:"WAKE",
+  plan_proposed:"PLAN", plan_critique:"PLAN", plan_rejected:"PLAN", plan_approved:"PLAN",
+  worker_report:"ACT", tdd_red:"ACT",
+  iteration:"RECORD", tick:"RECORD", memory_log:"RECORD", memory_canon:"RECORD", spec_amended:"RECORD",
+  optimize:"OPTIMIZE", optimize_skipped:"OPTIMIZE", goal_closed:"OPTIMIZE"
+};
+var PHASE_SEQ = ["WAKE","PLAN","ACT","VERIFY","RECORD","OPTIMIZE"];
+function setPhase(ph){
+  if (!ph) return;
+  A.phase = ph;
+  var idx = PHASE_SEQ.indexOf(ph);
+  document.querySelectorAll("#phases .ph").forEach(function(el, i){
+    el.classList.remove("active","done","gatehold");
+    if (i < idx) el.classList.add("done");
+    if (i === idx) el.classList.add("active");
+  });
+}
+function setGate(state){ // "hold" | "open" | ""
+  $("gate").className = state;
+  var planEl = document.querySelector('#phases .ph[data-ph="PLAN"]');
+  if (state === "hold" && planEl){ planEl.classList.add("gatehold"); }
+}
+
+/* ================= overview render ================= */
+function tile(k, v, cls){
+  return '<div class="tile cham '+(cls||"")+'"><div class="k">'+esc(k)+'</div><div class="v">'+v+'</div></div>';
+}
+function stamp(txt, cls){ return '<span class="stamp '+cls+'">'+esc(txt)+'</span>'; }
+
+function renderState(snap){
+  A.snap = snap;
+  var goal = snap.goal || {}, st = snap.state || {}, plan = st.plan || {};
+  var lv = st.last_verdict, lease = snap.lease;
+  $("goalid").textContent = goal.id || "NO ACTIVE GOAL";
+  $("repoline").textContent = snap.repo || "";
+  $("modechip").textContent = snap.allow_actions ? "actions armed" : "read-only";
+  $("modechip").className = "chip " + (snap.allow_actions ? "amber" : "");
+
+  var stamps = "";
+  var status = goal.status || "none";
+  // convergence is a first-class display state: all done-means true while the
+  // goal is still "active" means the loop finished and the CLOSE-OUT is the
+  // human's move (the loop never marks its own contract done)
+  var dm0 = st.done_means || {}, dmk = Object.keys(dm0);
+  var dmDone = dmk.filter(function(k){ return dm0[k]; }).length;
+  var converged = dmk.length > 0 && dmDone === dmk.length && status === "active";
+  stamps += stamp(status, status==="active" ? "aqua" : status==="done" ? "dim" : "amber");
+  if (converged) stamps += stamp("CONVERGED ✓ awaiting close-out", "amber");
+  if (lv) stamps += stamp(lv.pass ? "last: pass" : "last: fail", lv.pass ? "aqua" : "red");
+  if (st.paused_by_stall) stamps += stamp("STALLED", "red");
+  if (goal.tdd || (snap.policy && snap.policy.tdd)) stamps += stamp("tdd", "dim");
+  if (goal.critic || (snap.policy && snap.policy.critic)) stamps += stamp("critic", "dim");
+  if (goal.optimize !== false) stamps += stamp("optimize", "dim");
+  $("goalstatus").innerHTML = stamps;
+
+  // done-means ring + checklist
+  var dm = st.done_means || {}, keys = Object.keys(dm);
+  var done = keys.filter(function(k){ return dm[k]; }).length;
+  var pct = keys.length ? Math.round(done/keys.length*100) : 0;
+  $("ringpct").textContent = keys.length ? done+"/"+keys.length : "—";
+  $("ringfg").style.strokeDashoffset = String(326.7*(1 - (keys.length ? done/keys.length : 0)));
+  $("donemeans").innerHTML = keys.length ? keys.map(function(k){
+    return '<li><span class="tickbox '+(dm[k]?"on":"off")+'">'+(dm[k]?"[✓]":"[ ]")+'</span>'+
+           '<span class="'+(dm[k]?"done":"")+'">'+esc(k)+"</span></li>";
+  }).join("") : '<li class="empty">NO DONE-MEANS</li>';
+
+  // instrument tiles
+  var iter = st.iteration == null ? "—" : st.iteration;
+  var maxI = goal.max_iterations || "∞";
+  var tok = st.tokens_total == null ? 0 : st.tokens_total;
+  var budget = goal.budget_tokens || (snap.policy && snap.policy.budget_tokens) || 0;
+  var t = "";
+  t += tile("iteration", esc(iter)+' <small>/ '+esc(maxI)+"</small>", "aqua");
+  t += tile("plan status", esc(plan.status||"none"),
+            plan.status==="awaiting-human" ? "amber" : plan.status==="approved" ? "aqua" : "dim");
+  t += tile("tokens", esc(tok.toLocaleString ? tok.toLocaleString() : tok)+
+            (budget ? ' <small>/ '+esc(budget.toLocaleString())+"</small>" : ' <small>unbudgeted</small>'),
+            budget && tok >= budget ? "red" : "");
+  t += tile("stall count", esc(st.stall_count==null ? "—" : st.stall_count)+
+            (st.paused_by_stall ? " <small>PAUSED</small>" : ""), st.paused_by_stall ? "red" : "");
+  t += tile("breaker", snap.consecutive_errors >= 3 ? "OPEN" : esc(snap.consecutive_errors)+" <small>errors</small>",
+            snap.consecutive_errors >= 3 ? "red" : snap.consecutive_errors > 0 ? "amber" : "dim");
+  t += tile("lease", lease ? esc((lease.host||"?")+" · pid "+lease.pid) : "free", lease ? "amber" : "dim");
+  $("tiles").innerHTML = t;
+
+  // pending plan
+  var actionable = plan.status === "awaiting-human";
+  if (plan.status && plan.status !== "none"){
+    var p = "";
+    (plan.tasks||[]).forEach(function(tk){
+      var task = (tk && typeof tk === "object") ? tk.task : tk;
+      var kind = (tk && typeof tk === "object" && tk.kind) ? tk.kind : "";
+      p += '<div class="task">'+(kind ? '<span class="kind '+esc(kind)+'">'+esc(kind)+"</span>" : "")+esc(task||"")+"</div>";
+    });
+    (plan.assumptions||[]).forEach(function(a){ p += '<div class="assump">? '+esc(a)+"</div>"; });
+    $("plan").innerHTML = p || '<div class="empty">EMPTY PLAN</div>';
+    $("plan").className = "";
+  } else if (converged) {
+    $("plan").innerHTML =
+      '<div class="task" style="border-left-color:var(--aqua)">' +
+        '<b style="color:var(--aqua);font-family:var(--disp);letter-spacing:2px">GOAL COMPLETE</b> — ' +
+        'all ' + dmk.length + ' done-means verified in ' + esc(iter) + ' of ' + esc(maxI) +
+        ' iterations (max_iterations is a ceiling, not a quota). Last verdict: pass.</div>' +
+      '<div class="assump" style="color:var(--dim)">The loop never closes its own contract — a human ' +
+        'archives it. Review the full run in TELEMETRY, then close out via /agent-loop status ' +
+        '(or: set goal.json status "done", journal goal_closed, move the four files to archive/&lt;id&gt;/).</div>';
+    $("plan").className = "";
+  } else {
+    $("plan").innerHTML = "NO PENDING PLAN";
+    $("plan").className = "empty";
+  }
+  $("actionrow").style.display = (actionable && snap.allow_actions) ? "flex" : "none";
+
+  // gate + alert bar + app status
+  setGate(actionable ? "hold" : plan.status === "approved" ? "open" : "");
+  var alertEl = $("alertbar");
+  if (st.paused_by_stall || snap.consecutive_errors >= 3){
+    alertEl.style.display = "flex"; alertEl.className = "red";
+    $("alerttext").textContent = st.paused_by_stall
+      ? "◈ STALL PAUSE — the loop is redoing identical work; a human must adjust the spec"
+      : "◈ CIRCUIT BREAKER OPEN — consecutive errored ticks; re-arm required";
+    $("alertapprove").style.display = "none"; $("alertreject").style.display = "none";
+    setAppStatus("alarm");
+  } else if (actionable){
+    alertEl.style.display = "flex"; alertEl.className = "";
+    $("alerttext").textContent = "◆ GATE HOLD — a proposed plan awaits human approval";
+    var showBtns = snap.allow_actions;
+    $("alertapprove").style.display = showBtns ? "" : "none";
+    $("alertreject").style.display = showBtns ? "" : "none";
+    setAppStatus("hold");
+  } else if (converged){
+    alertEl.style.display = "flex"; alertEl.className = "";
+    $("alerttext").textContent = "✓ CONVERGED — every done-means verified; the loop is finished. Close-out is the human's move.";
+    $("alertapprove").style.display = "none"; $("alertreject").style.display = "none";
+    setAppStatus("done");
+    // the pipeline is complete: light every phase segment steady, no pulse
+    document.querySelectorAll("#phases .ph").forEach(function(el){
+      el.classList.remove("active","gatehold"); el.classList.add("done");
+    });
+    setGate("");
+  } else {
+    alertEl.style.display = "none";
+    setAppStatus("ok");
+  }
+
+  // contract + memory views
+  $("goalmd").innerHTML = snap.goal_md ? mdlite(snap.goal_md) : "NO ACTIVE GOAL";
+  $("goalmd").className = snap.goal_md ? "" : "empty";
+  $("goaljson").textContent = snap.goal ? JSON.stringify(snap.goal, null, 2) : "—";
+  $("policyjson").textContent = snap.policy ? JSON.stringify(snap.policy, null, 2) : "no policy file — goals govern themselves";
+  $("memorymd").innerHTML = snap.memory_md ? mdlite(snap.memory_md) : "NO MEMORY FILE";
+  $("memorymd").className = snap.memory_md ? "" : "empty";
+}
+
+/* tiny markdown: headings, checkboxes, bullets */
+function mdlite(md){
+  return md.split("\n").map(function(ln){
+    var m;
+    if ((m = ln.match(/^#+\s+(.*)/))) return "<h3>"+esc(m[1])+"</h3>";
+    if ((m = ln.match(/^- \[([ xX])\]\s?(.*)/)))
+      return '<li><span class="'+(m[1]===" "?"x-off":"x-on")+'">'+(m[1]===" "?"[ ]":"[✓]")+"</span> "+esc(m[2])+"</li>";
+    if ((m = ln.match(/^[-*]\s+(.*)/))) return "<li>▪ "+esc(m[1])+"</li>";
+    if (!ln.trim()) return "";
+    return "<p>"+esc(ln)+"</p>";
+  }).join("");
+}
+
+/* ================= telemetry feed ================= */
+var GROUP_OF = {
+  plan_proposed:"plan", plan_approved:"plan", plan_rejected:"plan",
+  refused:"gates", tdd_red:"gates",
+  worker_report:"work",
+  iteration:"verdict", tick:"verdict",
+  plan_critique:"mind", optimize:"mind", optimize_skipped:"mind",
+  memory_log:"mind", memory_canon:"mind"
+};
+var EBADGE = {
+  iteration:"e-aqua", tick:"e-aqua", tdd_red:"e-red", refused:"e-red",
+  plan_proposed:"e-amber", plan_approved:"e-aqua", plan_rejected:"e-red",
+  plan_critique:"e-violet", optimize:"e-violet", optimize_skipped:"e-dim",
+  worker_report:"e-aqua", goal_init:"e-aqua", goal_closed:"e-dim",
+  stall_pause:"e-red", lease_takeover:"e-amber", memory_log:"e-dim",
+  memory_canon:"e-violet", spec_amended:"e-amber", interrupted:"e-amber"
+};
+function groupOf(ev){ return GROUP_OF[ev] || "sys"; }
+
+function summarize(ev, d){
+  switch (ev){
+    case "iteration": {
+      var v = d.verdict, pass = v && typeof v === "object" ? v.pass : v;
+      return "iter "+(d.iter!=null?d.iter:"?")+" — "+
+        (pass===true ? '<span style="color:var(--aqua)">PASS</span>'
+         : pass===false ? '<span style="color:var(--red)">FAIL</span>' : "recorded")+
+        (d.stall_count ? ' <span style="color:var(--amber)">(stall '+esc(d.stall_count)+")</span>" : "");
+    }
+    case "tdd_red":       return "red observed · rc="+esc(d.rc)+" · <code>"+esc(d.cmd||"?")+"</code>";
+    case "refused":       return '<span style="color:var(--red)">'+esc(d.op||"op")+" REFUSED</span> — "+esc(d.reason||"");
+    case "plan_critique": return "critic verdict: <b>"+esc(d.verdict||"?")+"</b>"+
+                                 (d.model ? ' <span style="color:var(--dim)">via '+esc(d.model)+"</span>" : "")+
+                                 ((d.blockers||[]).length ? ' · <span style="color:var(--red)">'+d.blockers.length+" blocker(s)</span>" : "");
+    case "tick":          return "done-means ticked → <b>"+esc(d.slug||"?")+"</b>";
+    case "optimize":      return "optimize · +"+esc(d.guidance_appended||0)+" guidance · +"+
+                                 esc(d.canon_appended||0)+" canon"+
+                                 (d.guidance_truncated ? " · "+esc(d.guidance_truncated)+" truncated" : "");
+    case "optimize_skipped": return "optimize skipped — "+esc(d.reason||"");
+    case "worker_report": return "worker · "+esc((d.task||d.report||"").toString().slice(0,140));
+    case "plan_proposed": return "plan proposed · "+esc((d.tasks||[]).length)+" task(s) → "+esc(d.status||"?");
+    case "plan_approved": return "plan APPROVED by "+esc(d.by||"?");
+    case "plan_rejected": return "plan rejected — "+esc(d.reason||"");
+    case "goal_init":     return "goal initialized · "+esc(Object.keys(d.done_means||{}).length)+" done-means";
+    case "goal_closed":   return "goal closed — "+esc(d.reason||"");
+    case "stall_pause":   return '<span style="color:var(--red)">STALL:</span> '+esc((d.report||"").slice(0,160));
+    case "lease_takeover":return "stale lease taken over";
+    case "spec_amended":  return "spec amended — "+esc((d.added||"").slice(0,140));
+    case "interrupted":   return "prior session died mid-iteration · "+esc(d.dirty_files||0)+" dirty file(s)";
+    default: { var s = JSON.stringify(d); return s && s !== "{}" ? esc(s.slice(0,160)) : ""; }
+  }
+}
+
+function rowMatches(r){
+  if (A.filters.indexOf("all") < 0 && A.filters.indexOf(groupOf(r.ev)) < 0) return false;
+  if (A.q && r.line.toLowerCase().indexOf(A.q) < 0) return false;
+  return true;
+}
+function makeRowEl(r, fresh){
+  var div = document.createElement("div");
+  div.className = "row" + (fresh ? " fresh" : "");
+  div.innerHTML = '<span class="at">'+esc((r.obj.at||"").replace(/^.*T/,"").replace("Z",""))+"</span>"+
+    '<span class="ebadge '+(EBADGE[r.ev]||"e-dim")+'">'+esc(r.ev)+"</span>"+
+    '<span class="sum">'+summarize(r.ev, r.d)+"</span>"+
+    (r.obj.actor ? '<span class="actor">'+esc(r.obj.actor)+"</span>" : "");
+  div.addEventListener("click", function(){ inspect(r, div); });
+  return div;
+}
+function refreshFeed(){
+  var feed = $("feed");
+  feed.innerHTML = "";
+  var shown = 0;
+  for (var i = A.rows.length - 1; i >= 0; i--){   // newest first
+    var r = A.rows[i];
+    if (!rowMatches(r)) continue;
+    feed.appendChild(makeRowEl(r, false));
+    shown++;
+  }
+  $("feedcount").textContent = shown + " / " + A.rows.length + " events";
+  if (!shown) feed.innerHTML = '<div class="empty">NO MATCHING TELEMETRY</div>';
+}
+function ingest(line, liveFresh){
+  var obj;
+  try { obj = JSON.parse(line); } catch(e){ obj = { event:"raw", raw:line }; }
+  var d = (obj.payload && typeof obj.payload === "object") ? obj.payload : obj;
+  var r = { line:line.toLowerCase(), obj:obj, d:d, ev:obj.event || "?" };
+  A.rows.push(r);
+  if (A.rows.length > MAX_ROWS) A.rows.shift();
+  if (rowMatches(r)){
+    var feed = $("feed");
+    if (feed.firstChild && feed.firstChild.className === "empty") feed.innerHTML = "";
+    feed.insertBefore(makeRowEl(r, liveFresh), feed.firstChild);
+    while (feed.children.length > MAX_ROWS) feed.removeChild(feed.lastChild);
+  }
+  $("feedcount").textContent = document.querySelectorAll("#feed .row").length + " / " + A.rows.length + " events";
+  // phase strip + notifications
+  if (PHASE_OF[r.ev]) setPhase(PHASE_OF[r.ev]);
+  if (liveFresh){
+    if (r.ev === "refused") toast("red", "GATE REFUSAL", d.op + " — " + (d.reason||""));
+    else if (r.ev === "stall_pause") toast("red", "STALL PAUSE", (d.report||"").slice(0,120));
+    else if (r.ev === "plan_proposed" && d.status === "awaiting-human")
+      toast("amber", "GATE HOLD", "a plan awaits human approval");
+    else if (r.ev === "plan_approved") toast("aqua", "PLAN APPROVED", "by " + (d.by||"?"));
+    else if (r.ev === "tdd_red") toast("aqua", "RED OBSERVED", d.cmd||"");
+    else if (r.ev === "goal_closed") toast("aqua", "GOAL CLOSED", d.reason||"");
+  }
+}
+
+/* ---------- inspector drawer ---------- */
+function jsonColor(obj){
+  var s = esc(JSON.stringify(obj, null, 2));
+  return s.replace(/(&quot;[^&]*?&quot;)(\s*:)?/g, function(m, str, colon){
+      return colon ? '<span class="jkey">'+str+"</span>"+colon : '<span class="jstr">'+str+"</span>";
+    })
+    .replace(/\b(true|false|null)\b/g, '<span class="jlit">$1</span>')
+    .replace(/(:\s*)(-?\d[\d.]*)/g, '$1<span class="jnum">$2</span>');
+}
+function inspect(r, el){
+  document.querySelectorAll("#feed .row.sel").forEach(function(x){ x.classList.remove("sel"); });
+  if (el) el.classList.add("sel");
+  $("inspbadge").textContent = r.ev;
+  $("inspbadge").className = "ebadge " + (EBADGE[r.ev] || "e-dim");
+  $("inspmeta").innerHTML = "at " + esc(r.obj.at||"?") +
+    (r.obj.actor ? " · actor <b>"+esc(r.obj.actor)+"</b>" : "") +
+    (r.obj.prev ? "<br>chain ← " + esc(String(r.obj.prev).slice(0,18)) + "…" : "");
+  $("inspjson").innerHTML = jsonColor(r.obj);
+  $("inspector").classList.add("open");
+}
+$("inspclose").addEventListener("click", function(){
+  $("inspector").classList.remove("open");
+  document.querySelectorAll("#feed .row.sel").forEach(function(x){ x.classList.remove("sel"); });
+});
+
+/* ---------- filters / search / pause ---------- */
+document.querySelectorAll(".fchip").forEach(function(ch){
+  ch.addEventListener("click", function(){
+    var g = ch.dataset.g;
+    if (g === "all"){ A.filters = ["all"]; }
+    else {
+      A.filters = A.filters.filter(function(x){ return x !== "all"; });
+      var i = A.filters.indexOf(g);
+      if (i >= 0) A.filters.splice(i, 1); else A.filters.push(g);
+      if (!A.filters.length) A.filters = ["all"];
+    }
+    localStorage.setItem("alw.filters", A.filters.join(","));
+    document.querySelectorAll(".fchip").forEach(function(c){
+      c.classList.toggle("on", A.filters.indexOf(c.dataset.g) >= 0);
+    });
+    refreshFeed();
+  });
+});
+document.querySelectorAll(".fchip").forEach(function(c){
+  c.classList.toggle("on", A.filters.indexOf(c.dataset.g) >= 0);
+});
+$("q").addEventListener("input", function(){ A.q = $("q").value.toLowerCase(); refreshFeed(); });
+$("pausebtn").addEventListener("click", function(){
+  A.paused = !A.paused;
+  $("pausebtn").textContent = A.paused ? "Resume ("+A.buffered.length+")" : "Pause";
+  $("pausebtn").className = "cta" + (A.paused ? " amber" : "");
+  if (!A.paused){
+    A.buffered.forEach(function(l){ ingest(l, false); });
+    A.buffered = [];
+    refreshFeed();
+  }
+});
+
+/* ---------- keyboard ---------- */
+document.addEventListener("keydown", function(e){
+  var tag = (document.activeElement && document.activeElement.tagName) || "";
+  if (e.key === "Escape"){
+    $("veil").classList.remove("open");
+    $("inspector").classList.remove("open");
+    if (tag === "INPUT" || tag === "TEXTAREA") document.activeElement.blur();
+    return;
+  }
+  if (tag === "INPUT" || tag === "TEXTAREA") return;
+  if (e.key === "1") setView("overview");
+  else if (e.key === "2") setView("telemetry");
+  else if (e.key === "3") setView("contract");
+  else if (e.key === "4") setView("memory");
+  else if (e.key === "5") setView("archive");
+  else if (e.key === "/"){ e.preventDefault(); setView("telemetry"); $("q").focus(); }
+  else if (e.key === "p"){ $("pausebtn").click(); }
+});
+
+/* ---------- actions: modal ---------- */
+var MODAL = { kind:null };
+function openModal(kind){
+  MODAL.kind = kind;
+  var plan = (A.snap && A.snap.state && A.snap.state.plan) || {};
+  $("modaltitle").textContent = kind === "approve" ? "Approve plan — the loop executes next" : "Reject plan — the loop re-plans";
+  $("modalbody").innerHTML = (plan.tasks||[]).map(function(t){
+    var task = (t && typeof t === "object") ? t.task : t;
+    var kd = (t && typeof t === "object" && t.kind) ? '<span class="kind '+esc(t.kind)+'">'+esc(t.kind)+"</span>" : "";
+    return '<div class="task">'+kd+esc(task||"")+"</div>";
+  }).join("") || '<div class="empty">EMPTY PLAN</div>';
+  $("modalreason").style.display = kind === "reject" ? "block" : "none";
+  $("modalreason").value = "";
+  $("modalgo").className = "cta" + (kind === "reject" ? " red" : "");
+  $("veil").classList.add("open");
+  if (kind === "reject") setTimeout(function(){ $("modalreason").focus(); }, 60);
+}
+$("modalcancel").addEventListener("click", function(){ $("veil").classList.remove("open"); });
+$("veil").addEventListener("click", function(e){ if (e.target === $("veil")) $("veil").classList.remove("open"); });
+$("modalgo").addEventListener("click", function(){
+  var kind = MODAL.kind;
+  var body = {};
+  if (REPO_PARAM) body.repo = REPO_PARAM;
+  if (kind === "reject"){
+    var reason = $("modalreason").value.trim();
+    if (!reason){ $("modalreason").style.borderColor = "var(--red)"; return; }
+    body.reason = reason;
+  }
+  fetch("/api/"+kind, { method:"POST", headers:{ "Content-Type":"application/json" },
+                        body: JSON.stringify(body) })
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      toast(j.ok ? "aqua" : "red", j.ok ? "COMMAND ACCEPTED" : "COMMAND FAILED",
+            (j.output || j.error || "").slice(0, 180));
+      $("veil").classList.remove("open");
+    })
+    .catch(function(e){ toast("red", "COMMAND FAILED", String(e)); });
+});
+$("approve").addEventListener("click", function(){ openModal("approve"); });
+$("reject").addEventListener("click", function(){ openModal("reject"); });
+$("alertapprove").addEventListener("click", function(){ openModal("approve"); });
+$("alertreject").addEventListener("click", function(){ openModal("reject"); });
+
+/* ---------- live stream ---------- */
+setAppStatus("ok");
+setPhase("WAKE");
+var es = new EventSource(withRepo("/events"));
+es.addEventListener("journal", function(e){
+  var live = Date.now() > A.replayUntil;
+  if (!live) A.replayUntil = Date.now() + 400;  // extend while replay burst continues
+  if (!A.live && live) A.live = true;
+  if (A.paused){ A.buffered.push(e.data); $("pausebtn").textContent = "Resume ("+A.buffered.length+")"; return; }
+  ingest(e.data, live);
+});
+es.addEventListener("state", function(e){
+  try { renderState(JSON.parse(e.data)); } catch(err){}
+});
+es.onopen = function(){
+  $("conn").innerHTML = '<span class="led aqua"></span>LIVE';
+};
+es.onerror = function(){
+  $("conn").innerHTML = '<span class="led red"></span>RELINK';
+};
+
+setView(A.view);
+fetch(withRepo("/api/state")).then(function(r){ return r.json(); }).then(renderState).catch(function(){});
+</script>
+</body>
+</html>
+"""
+
+
+# --- HTTP handler ----------------------------------------------------------------
+
+def make_handler(repo, allow_actions):
+    audit_path = os.path.join(al_dir(repo), "audit.jsonl")
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, fmt, *args):
+            if not QUIET:
+                BaseHTTPRequestHandler.log_message(self, fmt, *args)
+
+        # -- helpers -------------------------------------------------------------
+        def send_json(self, code, obj):
+            body = json.dumps(obj).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def read_body_json(self):
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            if length <= 0:
+                return {}
+            try:
+                return json.loads(self.rfile.read(length).decode("utf-8", "replace"))
+            except ValueError:
+                return {}
+
+        # -- GET ----------------------------------------------------------------
+        def do_GET(self):
+            path = self.path.split("?", 1)[0]
+            if path == "/":
+                body = DASHBOARD_HTML.replace(
+                    "__ALLOW_ACTIONS__", json.dumps(allow_actions)).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif path == "/api/state":
+                self.send_json(200, snapshot(repo, allow_actions))
+            elif path == "/api/archive":
+                # past loops: closed goals archived by close-out stay browsable
+                q = parse_qs(urlsplit(self.path).query)
+                goal = (q.get("goal") or [None])[0]
+                if goal:
+                    detail = archive_detail(repo, goal)
+                    if detail is None:
+                        self.send_json(404, {"error": "no such archived goal"})
+                    else:
+                        self.send_json(200, detail)
+                else:
+                    self.send_json(200, archive_list(repo))
+            elif path == "/events":
+                self.serve_events()
+            else:
+                self.send_json(404, {"error": "not found"})
+
+        # -- SSE ----------------------------------------------------------------
+        def sse(self, event, data):
+            chunk = ""
+            if event:
+                chunk += "event: %s\n" % event
+            for line in data.split("\n"):
+                chunk += "data: %s\n" % line
+            chunk += "\n"
+            self.wfile.write(chunk.encode("utf-8"))
+            self.wfile.flush()
+
+        def serve_events(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                offset = self.replay_journal()
+                last_snap = None
+                last_hb = time.time()
+                buf = b""
+                while True:
+                    # journal follow by byte offset; shrink (goal archived) resets
+                    try:
+                        size = os.path.getsize(audit_path)
+                    except OSError:
+                        size = 0
+                    if size < offset:
+                        offset, buf = 0, b""
+                    if size > offset:
+                        with open(audit_path, "rb") as f:
+                            f.seek(offset)
+                            buf += f.read(size - offset)
+                        offset = size
+                        while b"\n" in buf:
+                            line, buf = buf.split(b"\n", 1)
+                            line = line.decode("utf-8", "replace").rstrip("\r")
+                            if line.strip():
+                                self.sse("journal", line)
+                    # state push on change
+                    snap = json.dumps(snapshot(repo, allow_actions), sort_keys=True)
+                    if snap != last_snap:
+                        last_snap = snap
+                        self.sse("state", snap)
+                    # heartbeat comment ~15s
+                    now = time.time()
+                    if now - last_hb >= HEARTBEAT_SECS:
+                        last_hb = now
+                        self.wfile.write(b": heartbeat\n\n")
+                        self.wfile.flush()
+                    time.sleep(POLL_SECS)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # client went away — normal for a dashboard tab closing
+
+        def replay_journal(self):
+            """Emit every existing audit.jsonl line VERBATIM; return byte offset."""
+            try:
+                with open(audit_path, "rb") as f:
+                    raw = f.read()
+            except OSError:
+                return 0
+            offset = len(raw)
+            if raw and not raw.endswith(b"\n"):  # hold a partial trailing line
+                cut = raw.rfind(b"\n") + 1
+                raw, offset = raw[:cut], cut
+            for bline in raw.split(b"\n"):
+                line = bline.decode("utf-8", "replace").rstrip("\r")
+                if line.strip():
+                    self.sse("journal", line)
+            return offset
+
+        # -- POST ----------------------------------------------------------------
+        def do_POST(self):
+            # one CSRF rule, both modes: JSON Content-Type + a local Host header
+            ctype = self.headers.get("Content-Type") or ""
+            if "application/json" not in ctype:
+                self.send_json(415, {"error": "Content-Type must be application/json"})
+                return
+            host = (self.headers.get("Host") or "").partition(":")[0]
+            if host not in ("127.0.0.1", "localhost"):
+                self.send_json(403, {"error": "requests must address 127.0.0.1 or localhost"})
+                return
+            path = self.path.split("?", 1)[0]
+            if path not in ("/api/approve", "/api/reject"):
+                self.send_json(404, {"error": "not found"})
+                return
+            if not allow_actions:
+                self.send_json(403, {"error": "actions disabled — restart al-watch with --allow-actions"})
+                return
+            body = self.read_body_json()
+            if path == "/api/approve":
+                ok, out = run_al_state(repo, ["plan-approve"])
+            else:
+                reason = body.get("reason")
+                if not isinstance(reason, str) or not reason.strip():
+                    self.send_json(400, {"error": "reject requires a non-empty \"reason\" in the JSON body"})
+                    return
+                ok, out = run_al_state(repo, ["plan-reject", reason])
+            self.send_json(200 if ok else 500, {"ok": ok, "output": out})
+
+    return Handler
+
+
+# --- fleet HTTP handler ------------------------------------------------------------
+
+# Fleet grid page — the application home screen. Same phosphor flight-deck
+# design language as DASHBOARD_HTML; card click drills down to /?repo=<path>.
+FLEET_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>agent-loop fleet</title>
+<link id="fav" rel="icon" href="data:,">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+:root{
+  --void:#04070a; --p0:#080e13; --p1:#0c141b; --p2:#101b23;
+  --line:#1c2b34; --line2:#2c4350;
+  --ink:#d9e8e6; --dim:#647d88; --faint:#3a505b;
+  --aqua:#5ff2dc; --aqua-glo:rgba(95,242,220,.45);
+  --amber:#ffb454; --amber-glo:rgba(255,180,84,.4);
+  --red:#ff5468;  --red-glo:rgba(255,84,104,.45);
+  --violet:#b48cff;
+  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --disp:'Chakra Petch',var(--mono);
+  --ch:10px; /* chamfer size */
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--void); color:var(--ink);
+  font:13px/1.55 var(--mono);
+  overflow:hidden;
+}
+/* ---------- atmosphere: grid + scanlines + vignette ---------- */
+#fx{position:fixed;inset:0;pointer-events:none;z-index:90}
+#fx::before{content:"";position:absolute;inset:0;
+  background:
+    radial-gradient(1200px 700px at 70% -10%, rgba(95,242,220,.05), transparent 60%),
+    radial-gradient(900px 600px at 0% 110%, rgba(255,180,84,.04), transparent 55%),
+    repeating-linear-gradient(0deg, rgba(95,242,220,.028) 0 1px, transparent 1px 44px),
+    repeating-linear-gradient(90deg, rgba(95,242,220,.028) 0 1px, transparent 1px 44px);
+}
+#fx::after{content:"";position:absolute;inset:0;
+  background:repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px);
+  mix-blend-mode:multiply;
+}
+::selection{background:var(--aqua);color:var(--void)}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:var(--line2);border-radius:0}
+::-webkit-scrollbar-track{background:transparent}
+
+/* ---------- chamfered instrument surfaces ---------- */
+.cham{
+  background:linear-gradient(180deg,var(--p1),var(--p0));
+  border:1px solid var(--line);
+  clip-path:polygon(var(--ch) 0,100% 0,100% calc(100% - var(--ch)),calc(100% - var(--ch)) 100%,0 100%,0 var(--ch));
+  position:relative;
+}
+.brk{position:relative}
+.brk::before,.brk::after{content:"";position:absolute;width:14px;height:14px;pointer-events:none;opacity:.9}
+.brk::before{top:-1px;left:-1px;border-top:1px solid var(--aqua);border-left:1px solid var(--aqua)}
+.brk::after{bottom:-1px;right:-1px;border-bottom:1px solid var(--aqua);border-right:1px solid var(--aqua)}
+
+/* ---------- app shell ---------- */
+#app{display:flex;flex-direction:column;height:100vh;position:relative;z-index:1}
+header{display:flex;align-items:center;gap:18px;padding:10px 16px 8px;
+  border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(16,27,35,.9),rgba(8,14,19,.75))}
+#mark{font:700 17px/1 var(--disp);letter-spacing:3px;white-space:nowrap;
+  color:var(--ink);text-shadow:0 0 18px var(--aqua-glo);animation:boot-flicker 1.6s steps(1) 1}
+#mark b{color:var(--aqua)}
+#mark small{display:block;font:500 9px/1.6 var(--disp);letter-spacing:5px;color:var(--dim)}
+@keyframes boot-flicker{0%,7%,11%{opacity:0}3%,9%,14%,100%{opacity:1}}
+#hud{display:flex;align-items:center;gap:14px;margin-left:auto;font-size:11px;color:var(--dim);white-space:nowrap}
+.led{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--faint);vertical-align:-1px;margin-right:5px}
+.led.aqua{background:var(--aqua);box-shadow:0 0 10px var(--aqua-glo);animation:breathe 2.4s ease-in-out infinite}
+.led.red{background:var(--red);box-shadow:0 0 10px var(--red-glo)}
+.led.amber{background:var(--amber);box-shadow:0 0 10px var(--amber-glo)}
+@keyframes breathe{50%{opacity:.45}}
+#clock{font:600 12px/1 var(--disp);letter-spacing:1px;color:var(--ink)}
+.chip{border:1px solid var(--line2);padding:2px 8px;font-size:10px;letter-spacing:1px;text-transform:uppercase}
+.chip.amber{color:var(--amber);border-color:var(--amber)}
+.chip.aqua{color:var(--aqua);border-color:var(--aqua)}
+
+main{flex:1;min-height:0;overflow:auto;padding:16px;position:relative;z-index:1}
+h2{font:600 10px/1 var(--disp);letter-spacing:3px;text-transform:uppercase;color:var(--dim);
+  margin-bottom:12px;display:flex;align-items:center;gap:8px}
+h2::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--line2),transparent)}
+
+/* ---------- fleet grid ---------- */
+#fleetgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px}
+.card{padding:13px 15px;cursor:pointer;overflow:hidden;
+  transition:border-color .2s, box-shadow .2s, transform .15s}
+.card:hover{border-color:var(--line2);transform:translateY(-2px);
+  box-shadow:0 0 18px rgba(95,242,220,.12)}
+.card.needs-human{border-color:var(--amber);
+  box-shadow:0 0 20px var(--amber-glo), inset 0 0 30px rgba(255,180,84,.05);
+  animation:cardglow 2.2s ease-in-out infinite}
+@keyframes cardglow{50%{box-shadow:0 0 32px var(--amber-glo), inset 0 0 30px rgba(255,180,84,.09)}}
+.card.needs-human.brk::before{border-top-color:var(--amber);border-left-color:var(--amber)}
+.card.needs-human.brk::after{border-bottom-color:var(--amber);border-right-color:var(--amber)}
+.ribbon{font:700 9px/1 var(--disp);letter-spacing:3px;text-transform:uppercase;
+  padding:5px 15px;margin:-13px -15px 10px;display:block;
+  background:linear-gradient(90deg, rgba(255,180,84,.18), transparent);
+  border-bottom:1px solid var(--amber);color:var(--amber);
+  animation:alertpulse 2.2s ease-in-out infinite}
+.ribbon.red{background:linear-gradient(90deg, rgba(255,84,104,.2), transparent);
+  border-bottom-color:var(--red);color:var(--red)}
+@keyframes alertpulse{0%,100%{filter:brightness(1)}50%{filter:brightness(1.35)}}
+.rname{font:700 17px/1.3 var(--disp);letter-spacing:1px;color:var(--ink);
+  text-shadow:0 0 16px var(--aqua-glo);word-break:break-all}
+.rpath{font-size:9.5px;color:var(--faint);word-break:break-all;margin-bottom:6px}
+.gline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0 8px}
+.gid{color:var(--dim);font-size:11px;word-break:break-all}
+.stamp{font:700 10px/1 var(--disp);letter-spacing:2px;padding:3px 8px;border:1px solid;text-transform:uppercase}
+.stamp.aqua{color:var(--aqua);border-color:var(--aqua);box-shadow:inset 0 0 12px rgba(95,242,220,.12)}
+.stamp.amber{color:var(--amber);border-color:var(--amber)}
+.stamp.red{color:var(--red);border-color:var(--red)}
+.stamp.dim{color:var(--dim);border-color:var(--line2)}
+.meters{display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;margin:8px 0}
+.m .k{font:600 8px/1.7 var(--disp);letter-spacing:2px;color:var(--dim);text-transform:uppercase;display:block}
+.m .v{font:600 14px/1.3 var(--disp);color:var(--ink)}
+.m .v small{font:500 10px var(--mono);color:var(--dim)}
+.m .v.red{color:var(--red)}
+.lamps{display:flex;gap:14px;margin:8px 0 0;font-size:9.5px;color:var(--dim);
+  text-transform:uppercase;letter-spacing:1px;white-space:nowrap;flex-wrap:wrap}
+.lamp{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--faint);vertical-align:-1px;margin-right:5px}
+.lamp.aqua{background:var(--aqua);box-shadow:0 0 10px var(--aqua-glo)}
+.lamp.amber{background:var(--amber);box-shadow:0 0 10px var(--amber-glo);animation:breathe 1.6s ease-in-out infinite}
+.lamp.red{background:var(--red);box-shadow:0 0 10px var(--red-glo);animation:breathe 1.2s ease-in-out infinite}
+.archline{margin-top:9px;padding-top:8px;border-top:1px dashed var(--line);font-size:10px;color:var(--dim)}
+.empty{grid-column:1/-1;color:var(--faint);padding:70px 24px;text-align:center;
+  font:600 12px/2.2 var(--disp);letter-spacing:3px;text-transform:uppercase}
+
+/* boot stagger */
+.boot>*{animation:powerup .5s both}
+.boot>*:nth-child(1){animation-delay:.05s}.boot>*:nth-child(2){animation-delay:.12s}
+.boot>*:nth-child(3){animation-delay:.19s}.boot>*:nth-child(4){animation-delay:.26s}
+.boot>*:nth-child(5){animation-delay:.33s}
+@keyframes powerup{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div id="fx"></div>
+<div id="app">
+  <header>
+    <div id="mark">◢ AGENT<b>·</b>LOOP<small>FLEET CONSOLE</small></div>
+    <div id="hud">
+      <span class="chip aqua" id="fleetchip">— repos</span>
+      <span class="chip" id="modechip">read-only</span>
+      <span id="conn"><span class="led"></span>LINK</span>
+      <span id="clock">--:--:--</span>
+    </div>
+  </header>
+  <main class="boot">
+    <h2>Fleet — every registered loop on this machine</h2>
+    <div id="fleetgrid"></div>
+  </main>
+</div>
+<script>
+"use strict";
+var ALLOW_ACTIONS = __ALLOW_ACTIONS__;
+var $ = function(id){ return document.getElementById(id); };
+function esc(s){
+  return String(s).replace(/[&<>"]/g, function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];
+  });
+}
+
+/* ================= clock + favicon ================= */
+setInterval(function(){
+  var d = new Date();
+  $("clock").textContent = d.toISOString().slice(11,19)+"Z";
+}, 1000);
+function setFavicon(color){
+  var c = document.createElement("canvas"); c.width = c.height = 16;
+  var g = c.getContext("2d");
+  g.fillStyle = "#04070a"; g.fillRect(0,0,16,16);
+  g.fillStyle = color; g.beginPath(); g.arc(8,8,4.2,0,7); g.fill();
+  g.shadowColor = color; g.shadowBlur = 5; g.fill();
+  $("fav").href = c.toDataURL("image/png");
+}
+
+$("modechip").textContent = ALLOW_ACTIONS ? "actions armed" : "read-only";
+$("modechip").className = "chip " + (ALLOW_ACTIONS ? "amber" : "");
+
+/* ================= grid render ================= */
+function fmt(n){ return (n && n.toLocaleString) ? n.toLocaleString() : String(n); }
+function baseName(p){
+  var parts = String(p||"").split("/").filter(Boolean);
+  return parts.length ? parts[parts.length-1] : String(p||"?");
+}
+function stamp(txt, cls){ return '<span class="stamp '+cls+'">'+esc(txt)+'</span>'; }
+
+function cardEl(e){
+  var flags = e.flags || [];
+  var div = document.createElement("div");
+  div.className = "card cham brk" + (e.needs_human ? " needs-human" : "");
+  var g = e.goal || {};
+  var status = g.status || "none";
+  var dm = e.done_means || {};
+  var converged = (dm.total > 0) && (dm.done === dm.total) && status === "active";
+  var ribbon = "";
+  if (flags.indexOf("breaker-open") >= 0)           ribbon = '<div class="ribbon red">◈ BREAKER</div>';
+  else if (flags.indexOf("stalled") >= 0)           ribbon = '<div class="ribbon red">◈ STALLED</div>';
+  else if (flags.indexOf("awaiting-approval") >= 0) ribbon = '<div class="ribbon">◆ GATE HOLD</div>';
+  else if (converged) ribbon = '<div class="ribbon" style="color:var(--aqua);border-color:var(--aqua)">✓ CONVERGED — close-out awaits</div>';
+  var tok = e.tokens_total == null ? 0 : e.tokens_total;
+  var budget = g.budget_tokens || 0;
+  var arch = e.archive || {};
+  var planCls = e.plan_status === "awaiting-human" ? "amber"
+              : e.plan_status === "approved" ? "aqua" : "";
+  var html = ribbon;
+  html += '<div class="rname">'+esc(baseName(e.repo))+'</div>';
+  html += '<div class="rpath">'+esc(e.repo||"")+'</div>';
+  html += '<div class="gline"><span class="gid">'+esc(g.id||"no active goal")+'</span>'+
+          stamp(status, status==="active" ? "aqua" : status==="done" ? "dim" : "amber")+
+          (dm.total ? ' <small style="color:'+(converged?"var(--aqua)":"var(--dim)")+'">'+
+            esc(dm.done)+'/'+esc(dm.total)+'</small>' : "")+
+          '</div>';
+  html += '<div class="meters">'+
+    '<div class="m"><span class="k">iteration</span><span class="v">'+
+      esc(e.iteration==null?"—":e.iteration)+' <small>/ '+esc(g.max_iterations||"∞")+'</small></span></div>'+
+    '<div class="m"><span class="k">tokens</span><span class="v'+
+      (budget && tok >= budget ? ' red' : '')+'">'+esc(fmt(tok))+
+      (budget ? ' <small>/ '+esc(fmt(budget))+'</small>' : ' <small>unbudgeted</small>')+
+      '</span></div>'+
+    '</div>';
+  html += '<div class="lamps">'+
+    '<span><span class="lamp '+planCls+'"></span>plan '+esc(e.plan_status||"none")+'</span>'+
+    '<span><span class="lamp'+(e.paused_by_stall ? ' red' : '')+'"></span>stall</span>'+
+    '<span><span class="lamp'+(e.consecutive_errors >= 3 ? ' red' : '')+'"></span>breaker</span>'+
+    '<span><span class="lamp'+(e.lease ? ' aqua' : '')+'"></span>lease</span>'+
+    '</div>';
+  html += '<div class="archline">'+esc(arch.goals||0)+' goals archived · '+
+          esc(fmt(arch.tokens||0))+' tokens lifetime</div>';
+  div.innerHTML = html;
+  div.addEventListener("click", function(){
+    location.href = "/?repo=" + encodeURIComponent(e.repo);
+  });
+  return div;
+}
+
+function render(fleet){
+  fleet = Array.isArray(fleet) ? fleet : [];
+  var needsHuman = 0;
+  fleet.forEach(function(x){ if (x.needs_human) needsHuman++; });
+  document.title = (needsHuman ? "◆ "+needsHuman+" — " : "") + "agent-loop fleet";
+  setFavicon(needsHuman ? "#ffb454" : "#5ff2dc");
+  $("fleetchip").textContent = fleet.length + (fleet.length === 1 ? " repo" : " repos");
+  var grid = $("fleetgrid");
+  grid.innerHTML = "";
+  if (!fleet.length){
+    grid.innerHTML = '<div class="empty">NO REPOS REGISTERED — run a loop anywhere and it appears here</div>';
+    return;
+  }
+  fleet.slice().sort(function(a, b){
+    if (!!a.needs_human !== !!b.needs_human) return a.needs_human ? -1 : 1;
+    var an = baseName(a.repo).toLowerCase(), bn = baseName(b.repo).toLowerCase();
+    return an < bn ? -1 : an > bn ? 1 : 0;
+  }).forEach(function(e){ grid.appendChild(cardEl(e)); });
+}
+
+/* ================= live stream ================= */
+setFavicon("#5ff2dc");
+var es = new EventSource("/events");
+es.addEventListener("fleet", function(ev){
+  try { render(JSON.parse(ev.data)); } catch(err){}
+});
+es.onopen = function(){ $("conn").innerHTML = '<span class="led aqua"></span>LIVE'; };
+es.onerror = function(){ $("conn").innerHTML = '<span class="led red"></span>RELINK'; };
+fetch("/api/fleet").then(function(r){ return r.json(); }).then(render).catch(function(){});
+</script>
+</body>
+</html>
+"""
+
+
+def make_fleet_handler(registry_path, allow_actions):
+    """Fleet-mode handler — a SEPARATE class, deliberately not a parameterized
+    rewrite of make_handler(): single-repo behavior stays byte-identical, so
+    a little duplication here is the safe trade."""
+
+    class FleetHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, fmt, *args):
+            if not QUIET:
+                BaseHTTPRequestHandler.log_message(self, fmt, *args)
+
+        # -- helpers -------------------------------------------------------------
+        def send_json(self, code, obj):
+            body = json.dumps(obj).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def read_body_json(self):
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            if length <= 0:
+                return {}
+            try:
+                return json.loads(self.rfile.read(length).decode("utf-8", "replace"))
+            except ValueError:
+                return {}
+
+        # -- GET ----------------------------------------------------------------
+        def do_GET(self):
+            split = urlsplit(self.path)
+            path = split.path
+            qs = parse_qs(split.query)
+            repo_raw = (qs.get("repo") or [None])[0]
+            repo = None
+            if repo_raw is not None:
+                rp = os.path.realpath(repo_raw)
+                if rp in read_registry(registry_path):
+                    repo = rp
+            if path == "/":
+                # registered ?repo= -> the single-repo console (drill-down);
+                # bare / unregistered -> the fleet grid home screen.
+                page = DASHBOARD_HTML if repo is not None else FLEET_HTML
+                body = page.replace(
+                    "__ALLOW_ACTIONS__", json.dumps(allow_actions)).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif path == "/api/fleet":
+                self.send_json(200, [slim_snapshot(r)
+                                     for r in read_registry(registry_path)])
+            elif path == "/api/state":
+                if repo is None:
+                    self.send_json(404, {"error": "unknown or unregistered repo"})
+                else:
+                    self.send_json(200, snapshot(repo, allow_actions))
+            elif path == "/events":
+                if repo_raw is None:
+                    self.serve_fleet_events()
+                elif repo is None:
+                    self.send_json(404, {"error": "unknown or unregistered repo"})
+                else:
+                    self.serve_repo_events(repo)
+            elif path == "/api/archive":
+                if repo is None:
+                    self.send_json(404, {"error": "unknown or unregistered repo"})
+                    return
+                goal_id = (qs.get("goal") or [None])[0]
+                if goal_id is None:
+                    self.send_json(200, archive_list(repo))
+                else:
+                    detail = archive_detail(repo, goal_id)
+                    if detail is None:
+                        self.send_json(404, {"error": "no such archived goal"})
+                    else:
+                        self.send_json(200, detail)
+            else:
+                self.send_json(404, {"error": "not found"})
+
+        # -- SSE ----------------------------------------------------------------
+        def sse(self, event, data):
+            chunk = ""
+            if event:
+                chunk += "event: %s\n" % event
+            for line in data.split("\n"):
+                chunk += "data: %s\n" % line
+            chunk += "\n"
+            self.wfile.write(chunk.encode("utf-8"))
+            self.wfile.flush()
+
+        def start_sse(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.end_headers()
+
+        def serve_fleet_events(self):
+            """`event: fleet` with the slim array on change, plus heartbeats."""
+            self.start_sse()
+            try:
+                last = None
+                last_hb = time.time()
+                while True:
+                    snap = json.dumps([slim_snapshot(r)
+                                       for r in read_registry(registry_path)],
+                                      sort_keys=True)
+                    if snap != last:
+                        last = snap
+                        self.sse("fleet", snap)
+                    now = time.time()
+                    if now - last_hb >= HEARTBEAT_SECS:
+                        last_hb = now
+                        self.wfile.write(b": heartbeat\n\n")
+                        self.wfile.flush()
+                    time.sleep(POLL_SECS)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # client went away — normal for a dashboard tab closing
+
+        def serve_repo_events(self, repo):
+            """Single-repo drill-down: same replay/follow semantics as
+            make_handler's /events, addressed by ?repo=."""
+            audit_path = os.path.join(al_dir(repo), "audit.jsonl")
+            self.start_sse()
+            try:
+                offset = self.replay_journal(audit_path)
+                last_snap = None
+                last_hb = time.time()
+                buf = b""
+                while True:
+                    try:
+                        size = os.path.getsize(audit_path)
+                    except OSError:
+                        size = 0
+                    if size < offset:
+                        offset, buf = 0, b""
+                    if size > offset:
+                        with open(audit_path, "rb") as f:
+                            f.seek(offset)
+                            buf += f.read(size - offset)
+                        offset = size
+                        while b"\n" in buf:
+                            line, buf = buf.split(b"\n", 1)
+                            line = line.decode("utf-8", "replace").rstrip("\r")
+                            if line.strip():
+                                self.sse("journal", line)
+                    snap = json.dumps(snapshot(repo, allow_actions), sort_keys=True)
+                    if snap != last_snap:
+                        last_snap = snap
+                        self.sse("state", snap)
+                    now = time.time()
+                    if now - last_hb >= HEARTBEAT_SECS:
+                        last_hb = now
+                        self.wfile.write(b": heartbeat\n\n")
+                        self.wfile.flush()
+                    time.sleep(POLL_SECS)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def replay_journal(self, audit_path):
+            """Emit every existing audit.jsonl line VERBATIM; return byte offset."""
+            try:
+                with open(audit_path, "rb") as f:
+                    raw = f.read()
+            except OSError:
+                return 0
+            offset = len(raw)
+            if raw and not raw.endswith(b"\n"):  # hold a partial trailing line
+                cut = raw.rfind(b"\n") + 1
+                raw, offset = raw[:cut], cut
+            for bline in raw.split(b"\n"):
+                line = bline.decode("utf-8", "replace").rstrip("\r")
+                if line.strip():
+                    self.sse("journal", line)
+            return offset
+
+        # -- POST ----------------------------------------------------------------
+        def do_POST(self):
+            # one CSRF rule, both modes: JSON Content-Type + a local Host header
+            ctype = self.headers.get("Content-Type") or ""
+            if "application/json" not in ctype:
+                self.send_json(415, {"error": "Content-Type must be application/json"})
+                return
+            host = (self.headers.get("Host") or "").partition(":")[0]
+            if host not in ("127.0.0.1", "localhost"):
+                self.send_json(403, {"error": "requests must address 127.0.0.1 or localhost"})
+                return
+            path = self.path.split("?", 1)[0]
+            if path not in ("/api/approve", "/api/reject"):
+                self.send_json(404, {"error": "not found"})
+                return
+            body = self.read_body_json()
+            repo_val = body.get("repo")
+            if not isinstance(repo_val, str) or not repo_val.strip():
+                self.send_json(400, {"error": "fleet actions require a \"repo\" in the JSON body"})
+                return
+            repo = os.path.realpath(repo_val)
+            if repo not in read_registry(registry_path):
+                self.send_json(404, {"error": "repo is not a registered fleet member"})
+                return
+            if not allow_actions:
+                self.send_json(403, {"error": "actions disabled — restart al-watch with --allow-actions"})
+                return
+            if path == "/api/approve":
+                ok, out = run_al_state(repo, ["plan-approve"])
+            else:
+                reason = body.get("reason")
+                if not isinstance(reason, str) or not reason.strip():
+                    self.send_json(400, {"error": "reject requires a non-empty \"reason\" in the JSON body"})
+                    return
+                ok, out = run_al_state(repo, ["plan-reject", reason])
+            self.send_json(200 if ok else 500, {"ok": ok, "output": out})
+
+    return FleetHandler
+
+
+# --- main -------------------------------------------------------------------------
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="al-watch",
+                                 description="Local real-time dashboard for one "
+                                             "agent-loop repo, or the whole fleet "
+                                             "(bare invocation).")
+    ap.add_argument("repo", nargs="?", default=None,
+                    help="repo root for single-repo mode; omit for fleet mode "
+                         "($AL_FLEET_REGISTRY or ~/.claude/agent-loop/fleet.list)")
+    ap.add_argument("--port", type=int, default=DEFAULT_PORT,
+                    help="port (default %d; 0 = OS-assigned)" % DEFAULT_PORT)
+    ap.add_argument("--allow-actions", action="store_true",
+                    help="enable POST /api/approve and /api/reject")
+    args = ap.parse_args(argv)
+
+    if args.repo is not None:
+        repo = os.path.abspath(args.repo)
+        handler = make_handler(repo, args.allow_actions)
+        watching = "watching %s" % repo
+    else:
+        registry = default_registry()
+        handler = make_fleet_handler(registry, args.allow_actions)
+        watching = "watching fleet (registry %s)" % registry
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), handler)
+    server.daemon_threads = True
+    port = server.server_address[1]
+    mode = "actions ENABLED" if args.allow_actions else "read-only"
+    print("al-watch: %s — %s at http://127.0.0.1:%d" % (mode, watching, port),
+          flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

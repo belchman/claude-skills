@@ -386,6 +386,61 @@ Env knobs: `AL_LOOP_PERMISSION_MODE` (default `acceptEdits` — allowlist your
 build/test commands in `.claude/settings.json`, or set a broader mode for
 sandboxed environments), `AL_LOOP_MAX_TURNS` (default 80).
 
+## Fleet console (standing server)
+
+One machine-wide `al-watch` in **fleet mode**: run it bare (no repo arg) and
+it serves a grid of every repo that has ever run the loop on this machine —
+repos auto-register into the fleet on each loop tick, and archived goals
+stay browsable after close-out. Drill into any repo from the grid.
+
+Quickstart:
+
+```
+al-watch          # fleet mode, http://127.0.0.1:4177
+```
+
+The SKILL's `/agent-loop watch` probes `GET /api/fleet` on 4177 before
+spawning — if a fleet console is already up it just hands you the URL, so
+running one standing server and letting every session reuse it is the
+intended shape. Service recipes, alongside the loop-tick ones above
+(`al-watch` is a standing server, so it's supervised with keep-alive, not
+fired on an interval):
+
+launchd (macOS) — `~/Library/LaunchAgents/com.agent-loop.watch.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.agent-loop.watch</string>
+  <key>ProgramArguments</key><array>
+    <string>/path/to/plugins/agent-loop/bin/al-watch</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict></plist>
+```
+
+systemd — `agent-loop-watch.service`:
+
+```ini
+[Service]
+Type=simple
+ExecStart=/path/to/plugins/agent-loop/bin/al-watch
+Restart=always
+[Install]
+WantedBy=default.target
+```
+
+cron cannot supervise a standing server (it fires jobs, it doesn't restart
+them) — at most use `@reboot` with a small wrapper script, and prefer
+launchd/systemd above.
+
+The fleet registry lives at `~/.claude/agent-loop/fleet.list`. Set
+`AL_NO_FLEET_REGISTER=1` to keep a repo out of it. As with the single-repo
+dashboard, the server binds 127.0.0.1 only — it is never reachable from the
+network.
+
 ## Watching context burn (statusline)
 
 Claude Code's statusline stdin includes documented `context_window.*`

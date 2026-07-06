@@ -1,7 +1,7 @@
 ---
 name: agent-loop
-description: Goal-driven loop harness. Subcommands — init (build the 7-file harness in this repo), new (interview → goal spec), run (plan→act→verify iterations; plans await human approval), approve/reject (act on a pending plan), status (loop health), doctor (harness health), canonize (promote memory to vault). Slash-only.
-argument-hint: "<init|new|run|approve|reject|status|doctor|canonize> [args]"
+description: Goal-driven loop harness. Subcommands — init (build the 7-file harness in this repo), new (interview → goal spec), run (plan→act→verify iterations; plans await human approval), approve/reject (act on a pending plan), status (loop health), doctor (harness health), watch (live dashboard), canonize (promote memory to vault). Slash-only.
+argument-hint: "<init|new|run|approve|reject|status|doctor|watch|canonize> [args]"
 disable-model-invocation: true
 ---
 
@@ -10,7 +10,7 @@ disable-model-invocation: true
 Route on the first argument (`$0` — skill arguments are 0-indexed in Claude
 Code, so `$0` IS the first argument; do not "fix" it to `$1`). If it is
 missing or not one of
-`init|new|run|approve|reject|status|doctor|canonize`, print the command table
+`init|new|run|approve|reject|status|doctor|watch|canonize`, print the command table
 below and stop.
 
 | Subcommand | Purpose |
@@ -22,6 +22,7 @@ below and stop.
 | `reject <reason>` | Reject the pending plan; next run re-plans around the reason |
 | `status` | Loop health: iteration, done-means, verdict, stall reading |
 | `doctor` | Harness health: checks D01–D16 |
+| `watch` | Live fleet console: every registered repo at a glance; streams state + journals |
 | `canonize` | Promote MEMORY.md "Candidate canon" entries into vault/ |
 
 Ground rules for every subcommand:
@@ -308,6 +309,36 @@ Loop health (harness health is `doctor`'s job).
 2. Interpret: for each FAIL/WARN quote the check ID and say what to do,
    linking `references/doctor-checks.md#<id>`. FAILs must be fixed before
    `run`; WARNs are judgment calls.
+
+## watch
+
+Live fleet console: `al-watch` (in the plugin's `bin/`, on PATH) in fleet
+mode serves every registered repo's state + audit journal to a local
+browser. Binds 127.0.0.1 only. One console per machine is enough — probe
+before spawning:
+
+1. **Probe** for a running console:
+   `curl -s -m 2 http://127.0.0.1:4177/api/fleet` and capture the HTTP
+   status code (e.g. `-o /dev/null -w '%{http_code}'`).
+2. **HTTP 200** — a fleet console is already running. Report
+   `http://127.0.0.1:4177` verbatim to the user; do NOT spawn anything.
+3. **Connection refused / no response** — nothing owns the port. Launch
+   bare `al-watch` (FLEET mode — no repo arg) as a **background process**
+   (`run_in_background: true` on the Bash tool — a foreground server never
+   returns and would block the turn forever), read-only: pass
+   `--allow-actions` ONLY when the user explicitly asked for approve/reject
+   buttons; otherwise leave it off and the POST endpoints answer 403.
+   `al-watch` prints the resolved URL on stdout
+   (`… at http://127.0.0.1:<port>`) — relay it verbatim, then return; do
+   not wait on the server. Remind the user how to stop it: kill the
+   background task (via the task list / TaskStop, or `kill <pid>`).
+4. **Any other HTTP status** (404 = an old single-repo `al-watch` owns the
+   port) — say a single-repo server owns 4177; suggest launching the fleet
+   console on another port (`al-watch --port N`). Never kill or relaunch
+   the existing server.
+
+Any repo that runs the loop auto-registers into the fleet
+(`~/.claude/agent-loop/fleet.list`); drill into a repo from the grid.
 
 ## canonize
 

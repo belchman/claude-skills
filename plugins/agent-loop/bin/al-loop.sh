@@ -30,6 +30,15 @@ STATE="$AL_DIR/state.json"
 
 [ -f "$GOAL_JSON" ] || exit 0                       # nothing to do
 
+# fleet registry (PULL model): a repo with a goal announces its root once —
+# BEFORE the status gates, so paused/awaiting repos still appear on the fleet.
+# Append-only grep-dedup'd, best-effort: registration never fails the tick.
+if [ -z "${AL_NO_FLEET_REGISTER:-}" ]; then
+  _REG="${AL_FLEET_REGISTRY:-${HOME:-}/.claude/agent-loop/fleet.list}"
+  mkdir -p "$(dirname "$_REG")" 2>/dev/null || true
+  grep -qxF -- "$REPO" "$_REG" 2>/dev/null || printf '%s\n' "$REPO" >> "$_REG" 2>/dev/null || true
+fi
+
 mkdir -p "$AL_DIR/logs"
 LOG="$AL_DIR/logs/loop.log"
 ERRF="$AL_DIR/logs/consecutive_errors"

@@ -4,6 +4,36 @@ All notable changes to this plugin. Semver; the marketplace entry and
 `.claude-plugin/plugin.json` must carry the same version (CI-enforced by
 `tests/test_marketplace_sync.sh`).
 
+## 0.4.0 — 2026-07-06
+
+The console wave — built through the loop itself (three goals, every gate).
+
+- **al-watch**: python3-stdlib local dashboard (`al-watch <repo>`), 127.0.0.1
+  only. Phosphor flight-deck app shell: Overview / Telemetry (filter chips,
+  search, pause, click-to-inspect raw journal lines with chain links) /
+  Contract / Memory / Archive views, loop-phase pipeline strip with the
+  human-gate diamond, toasts + alert bar + tab-title/favicon status,
+  approve/reject modal (403 without `--allow-actions`; actor `*@al-watch`).
+- **Fleet mode**: bare `al-watch` = one standing machine-wide console.
+  Repos auto-register on init/lease/tick (append-only grep-deduped
+  `~/.claude/agent-loop/fleet.list`, `AL_FLEET_REGISTRY` override,
+  `AL_NO_FLEET_REGISTER=1` opt-out); needs-human-sorted repo cards with
+  gate/stall/breaker lamps and lifetime archive stats; slim `/api/fleet` +
+  `event: fleet` SSE; drill-down to the full console via `?repo=`.
+- **Past loops stay visible**: `/api/archive` (both modes) + the ARCHIVE
+  view — archived goals with their contracts, final state, and full journal
+  timelines. Convergence is a first-class UI state (CONVERGED ✓ awaiting
+  close-out; the loop never closes its own contract).
+- **Action hardening**: POST requires `Content-Type: application/json` and a
+  port-stripped localhost Host header (CSRF/DNS-rebinding); fleet actions
+  realpath-allowlist the target repo against the registry.
+- **SKILL `watch` subcommand**: three-way probe (200 report / refused launch
+  / 404 single-repo conflict). README: standing-server recipes (launchd
+  KeepAlive, systemd Restart=always). `al-fleet` falls back to the default
+  registry when bare.
+- 100+ new model-free tests (watch 19, fleet 43, wired 15) + registry
+  sandboxing across every suite and the eval harness.
+
 ## 0.3.0 — 2026-07-05
 
 Enterprise wave — the gates become governable, auditable, and operable.

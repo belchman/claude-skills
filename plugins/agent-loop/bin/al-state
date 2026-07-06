@@ -188,6 +188,23 @@ mem_append() { # $1=section heading, $2=line — dated append under the heading 
   return 0
 }
 
+fleet_register() { # announce this repo's root to the machine-wide fleet registry.
+  # Fires ONLY when the state dir physically sits at */.claude/agent-loop —
+  # test sandboxes driving arbitrary --state paths never register. The
+  # registry is APPEND-ONLY with a grep dedupe guard (a tmp+mv rewrite would
+  # lose concurrent appends); readers dedupe and skip dead paths. Every step
+  # is best-effort: registration must never fail the parent command.
+  [ -z "${AL_NO_FLEET_REGISTER:-}" ] || return 0
+  _sd=$(cd "$STATE_DIR" 2>/dev/null && pwd -P) || return 0
+  case "$_sd" in */.claude/agent-loop) : ;; *) return 0 ;; esac
+  _root=$(cd "$_sd/../.." 2>/dev/null && pwd -P) || return 0
+  [ -n "$_root" ] || return 0
+  _reg="${AL_FLEET_REGISTRY:-${HOME:-}/.claude/agent-loop/fleet.list}"
+  mkdir -p "$(dirname "$_reg")" 2>/dev/null || return 0
+  grep -qxF -- "$_root" "$_reg" 2>/dev/null || printf '%s\n' "$_root" >> "$_reg" 2>/dev/null || return 0
+  return 0
+}
+
 case "$CMD" in
   init)
     GOAL_ID="${1:?al-state init: goal_id required}"
@@ -225,6 +242,7 @@ EOF
     "$ALJSON" validate "$STATE_FILE" "$SCHEMA" || exit 1
     audit_emit goal_init "{\"done_means\":$DM}"
     echo "al-state: initialized $STATE_FILE for goal $GOAL_ID"
+    fleet_register
     ;;
 
   get)
@@ -415,6 +433,7 @@ EOF
     if mkdir "$LEASE_DIR" 2>/dev/null; then
       write_owner
       echo "al-state: lease acquired (ttl ${TTL}s)"
+      fleet_register
     else
       EXP=$("$ALJSON" get "$LEASE_DIR/owner.json" expires_epoch 2>/dev/null || echo 0)
       case "$EXP" in ''|*[!0-9]*) EXP=0 ;; esac
@@ -422,6 +441,7 @@ EOF
         write_owner
         audit_emit lease_takeover "{\"stale_expires_epoch\":$EXP}"
         echo "al-state: stale lease taken over (ttl ${TTL}s) — takeover journaled"
+        fleet_register
       else
         echo "al-state: lease held by another session (expires in $((EXP - NOW_EPOCH))s) — refusing to run the loop concurrently" >&2
         exit 1

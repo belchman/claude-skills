@@ -16,6 +16,7 @@ check() { # $1=description, $2=exit code, $3=expected code
 }
 
 SANDBOX=$(mktemp -d); SANDBOX=$(cd "$SANDBOX" && pwd -P)
+export AL_FLEET_REGISTRY="$SANDBOX/fleet.list"   # keep make test away from the real registry
 STUB_BIN=$(mktemp -d)
 trap 'rm -rf "$SANDBOX" "$STUB_BIN"' EXIT
 export CLAUDE_PROJECT_DIR="$SANDBOX"

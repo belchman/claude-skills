@@ -3,6 +3,8 @@
 #
 #   al-fleet <repo-dir>...
 #   AL_FLEET_REPOS=/path/one:/path/two al-fleet
+#   al-fleet          # falls back to the fleet registry
+#                     # ($AL_FLEET_REGISTRY or ~/.claude/agent-loop/fleet.list)
 #
 # Columns: repo | goal id | status | iter/max | plan | flags | tokens | journal
 # Exit 1 when any repo NEEDS A HUMAN (plan awaiting approval, stall-paused,
@@ -16,7 +18,24 @@ REPOS="$*"
 if [ -z "$REPOS" ] && [ -n "${AL_FLEET_REPOS:-}" ]; then
   REPOS=$(printf '%s' "$AL_FLEET_REPOS" | tr ':' ' ')
 fi
-[ -n "$REPOS" ] || { echo "al-fleet: no repos (args or AL_FLEET_REPOS=path1:path2)" >&2; exit 2; }
+if [ -z "$REPOS" ] && [ -z "${AL_FLEET_REGISTRY:-}" ]; then
+  # fall back to the machine-wide fleet registry at its DEFAULT path
+  # (~/.claude/agent-loop/fleet.list, appended by al-state init/lease-acquire
+  # and al-loop.sh). Reader-side hygiene only: keep existing-dir lines, never
+  # rewrite the file. Absent/empty registry still lands on the usage error
+  # below. AL_FLEET_REGISTRY redirects the writers (and fleet-mode al-watch);
+  # when it is set, this bare-invocation convenience stays inert — the test
+  # suites export it to a sandbox precisely so their bare-al-fleet usage pin
+  # (exit 2) never reads a registry, sandboxed or real.
+  REG="${HOME:-}/.claude/agent-loop/fleet.list"
+  if [ -f "$REG" ]; then
+    while IFS= read -r _line; do
+      [ -n "$_line" ] && [ -d "$_line" ] && REPOS="$REPOS $_line"
+    done < "$REG"
+    REPOS="${REPOS# }"
+  fi
+fi
+[ -n "$REPOS" ] || { echo "al-fleet: no repos (args, AL_FLEET_REPOS=path1:path2, or ~/.claude/agent-loop/fleet.list)" >&2; exit 2; }
 
 NEEDS_HUMAN=0
 printf '%-30s %-28s %-9s %-8s %-15s %-22s %-10s %s\n' \

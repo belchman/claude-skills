@@ -19,11 +19,14 @@ test-fast: test-sync
 	python3 -m pytest -q
 	bash tests/test_feature_helpers.sh
 	bash tests/test_work_issues_lib.sh
+	bash tests/test_agent_loop_wired.sh
 
-# Everything (~4 min): fast suite + agent-loop bin/hook/loop suites + the
-# /feature orchestrator integration tests.
+# Everything (~4 min): fast suite + agent-loop bin/hook/loop/watch/fleet
+# suites + the /feature orchestrator integration tests.
 test: test-fast
 	bash tests/test_agent_loop_loop.sh
 	bash tests/test_agent_loop_hooks.sh
 	bash tests/test_agent_loop_bin.sh
+	bash tests/test_agent_loop_watch.sh
+	bash tests/test_agent_loop_fleet_watch.sh
 	bash tests/test_feature_orchestrator.sh
