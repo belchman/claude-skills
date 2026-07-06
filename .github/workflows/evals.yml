@@ -1,0 +1,31 @@
+name: Nightly evals
+
+# Model-based agent-loop evals (sandbox fixtures only — no private repos).
+# Requires the ANTHROPIC_API_KEY secret; the job skips gracefully without it.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  agent-loop-evals:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for API key
+        id: key
+        run: |
+          if [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "ANTHROPIC_API_KEY not configured — skipping model-based evals"
+          fi
+      - name: Install Claude Code
+        if: steps.key.outputs.present == 'true'
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Run sandbox eval scenarios
+        if: steps.key.outputs.present == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: sh evals/agent-loop/run-eval.sh --fixtures sandbox
