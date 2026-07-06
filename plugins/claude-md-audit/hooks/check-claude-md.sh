@@ -8,12 +8,11 @@ set -euo pipefail
 
 input="$(cat)"
 
-# Extract file_path from tool_input. jq if available; sed fallback.
-if command -v jq >/dev/null 2>&1; then
-  file_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty')"
-else
-  file_path="$(printf '%s' "$input" | sed -n 's/.*"file_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+# Require jq — a sed JSON fallback cannot safely handle embedded quotes/newlines.
+if ! command -v jq >/dev/null 2>&1; then
+  exit 0
 fi
+file_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty')"
 
 [ -z "$file_path" ] && exit 0
 
@@ -24,11 +23,13 @@ case "$(basename -- "$file_path")" in
   *) exit 0 ;;
 esac
 
-# Locate the linter. Prefer the plugin's bundled copy so the plugin is
-# self-contained; fall back to a project-level copy if the user has one.
+# Locate the linter. Pin to the directory holding *this* script first — env
+# vars like CLAUDE_PLUGIN_DIR are attacker-influenceable and `bash $linter` is
+# RCE if we trust them blindly.
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 linter=""
-if [ -n "${CLAUDE_PLUGIN_DIR:-}" ] && [ -x "${CLAUDE_PLUGIN_DIR}/hooks/lint-claude-md.sh" ]; then
-  linter="${CLAUDE_PLUGIN_DIR}/hooks/lint-claude-md.sh"
+if [ -x "${script_dir}/lint-claude-md.sh" ]; then
+  linter="${script_dir}/lint-claude-md.sh"
 elif [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -x "${CLAUDE_PROJECT_DIR}/tools/lint-claude-md.sh" ]; then
   linter="${CLAUDE_PROJECT_DIR}/tools/lint-claude-md.sh"
 elif [ -x "./tools/lint-claude-md.sh" ]; then

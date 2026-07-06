@@ -21,8 +21,17 @@ fmt_tok() {
   }'
 }
 
+# Bash arithmetic context evaluates command substitutions inside its operands,
+# so any non-numeric `p` coming from JSON could be RCE. Sanitize to digits-only.
+sanitize_int() {
+  local v="${1:-0}"
+  [[ "$v" =~ ^[0-9]+$ ]] || v=0
+  printf '%s' "$v"
+}
+
 color_pct() {
-  local p="${1:-0}"
+  local p
+  p="$(sanitize_int "${1:-0}")"
   if   (( p >= 90 )); then printf "\033[31m%s%%\033[0m" "$p"
   elif (( p >= 70 )); then printf "\033[33m%s%%\033[0m" "$p"
   else                    printf "\033[32m%s%%\033[0m" "$p"
@@ -30,13 +39,14 @@ color_pct() {
 }
 
 bar() {
-  local p="${1:-0}" w=10
+  local p w=10
+  p="$(sanitize_int "${1:-0}")"
   local filled=$(( p * w / 100 ))
   (( filled > w )) && filled=$w
   local empty=$(( w - filled ))
   local b=""
-  (( filled > 0 )) && b=$(printf '█%.0s' $(seq 1 $filled))
-  (( empty  > 0 )) && b="${b}$(printf '░%.0s' $(seq 1 $empty))"
+  (( filled > 0 )) && b=$(printf '█%.0s' $(seq 1 "$filled"))
+  (( empty  > 0 )) && b="${b}$(printf '░%.0s' $(seq 1 "$empty"))"
   printf '%s' "$b"
 }
 

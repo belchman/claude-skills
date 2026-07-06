@@ -207,7 +207,11 @@ def cmd_lizard(args: argparse.Namespace) -> int:
         eprint("crap: no files given to lizard")
         dump_json([], args.output)
         return 0
-    cmd = [sys.executable, "-m", "lizard", "--csv", *files]
+    # Filter out filenames starting with `-` to avoid argv-option injection if
+    # lizard later grows an option that matches. Cheap belt-and-suspenders;
+    # lizard does not currently accept `--` separators on all versions.
+    safe_files = [f if not f.startswith("-") else f"./{f}" for f in files]
+    cmd = [sys.executable, "-m", "lizard", "--csv", *safe_files]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     except FileNotFoundError:

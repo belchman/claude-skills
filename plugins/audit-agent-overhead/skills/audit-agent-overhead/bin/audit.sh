@@ -67,7 +67,7 @@ enabled_plugin_paths() {
 count_unique_skills_in_plugin() {
   local install_path="$1"
   [[ -d "$install_path" ]] || { echo 0; return; }
-  find "$install_path" -name SKILL.md 2>/dev/null \
+  find -- "$install_path" -name SKILL.md 2>/dev/null \
     | sed 's|/SKILL\.md$||' \
     | awk -F/ '{print $NF}' \
     | sort -u \
@@ -184,7 +184,7 @@ while IFS= read -r install_path; do
     [[ -f "$mf" ]] || continue
     n=$(jq -r '(.mcpServers // {}) | keys | length' "$mf" 2>/dev/null || echo 0)
     plugin_mcp_total=$((plugin_mcp_total + n))
-  done < <(find "$install_path" \( -name '.mcp.json' -o -name 'plugin.json' -o -name 'manifest.json' \) 2>/dev/null)
+  done < <(find -- "$install_path" \( -name '.mcp.json' -o -name 'plugin.json' -o -name 'manifest.json' \) 2>/dev/null)
 done < <(enabled_plugin_paths)
 echo "  plugin-bundled MCPs   : $plugin_mcp_total"
 

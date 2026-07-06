@@ -84,6 +84,12 @@ if [ ! -d "$REPO" ]; then
   exit 1
 fi
 
+# Validate --runs is a positive integer (used later as a loop bound).
+if ! [[ "$RUNS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "benchmark: --runs must be a positive integer (got: $RUNS)" >&2
+  exit 1
+fi
+
 median() {
   sort -n | awk '
     { a[NR]=$1 }
@@ -113,14 +119,14 @@ run_one() {
   local prompt; prompt="$(get_task_prompt "$task")"
   [ -z "$prompt" ] && { echo "unknown task: $task" >&2; return 1; }
 
-  local plan_flag=""
-  [ "$plan" = "1" ] && plan_flag="--permission-mode plan"
+  local plan_flag=()
+  [ "$plan" = "1" ] && plan_flag=(--permission-mode plan)
 
   local start end duration
   start=$(date +%s)
 
   local out
-  if ! out="$(cd "$REPO" && claude -p "$prompt" --output-format json --model "$model" $plan_flag 2>/dev/null)"; then
+  if ! out="$(cd "$REPO" && claude -p "$prompt" --output-format json --model "$model" "${plan_flag[@]}" 2>/dev/null)"; then
     end=$(date +%s); duration=$((end - start))
     echo "$task,$model,$run,$plan,0,0,$duration,0.0000,fail"
     return 0

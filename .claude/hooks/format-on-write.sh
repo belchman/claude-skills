@@ -6,14 +6,19 @@ set -euo pipefail
 
 input="$(cat)"
 
-if command -v jq >/dev/null 2>&1; then
-  file_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty')"
-else
-  file_path="$(printf '%s' "$input" | sed -n 's/.*"file_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+if ! command -v jq >/dev/null 2>&1; then
+  exit 0
 fi
+file_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty')"
 
 [ -z "$file_path" ] && exit 0
 [ ! -f "$file_path" ] && exit 0
+
+# Guard against paths that start with `-`. Most formatters parse leading-dash
+# args as options. Prefix with `./` so the path is unambiguously a file.
+case "$file_path" in
+  -*) file_path="./$file_path" ;;
+esac
 
 run() {
   # Run a formatter, swallow its output unless it fails.
@@ -25,14 +30,14 @@ run() {
 case "$file_path" in
   *.ts|*.tsx|*.js|*.jsx|*.mjs|*.cjs|*.json|*.css|*.scss|*.md|*.yaml|*.yml|*.html)
     if command -v prettier >/dev/null 2>&1; then
-      run prettier --write "$file_path"
+      run prettier --write -- "$file_path"
     fi
     ;;
   *.py)
     if command -v ruff >/dev/null 2>&1; then
-      run ruff format "$file_path"
+      run ruff format -- "$file_path"
     elif command -v black >/dev/null 2>&1; then
-      run black --quiet "$file_path"
+      run black --quiet -- "$file_path"
     fi
     ;;
   *.go)
@@ -42,17 +47,17 @@ case "$file_path" in
     ;;
   *.rs)
     if command -v rustfmt >/dev/null 2>&1; then
-      run rustfmt --quiet "$file_path"
+      run rustfmt --quiet -- "$file_path"
     fi
     ;;
   *.rb)
     if command -v rubocop >/dev/null 2>&1; then
-      run rubocop -a --format quiet "$file_path"
+      run rubocop -a --format quiet -- "$file_path"
     fi
     ;;
   *.sh|*.bash)
     if command -v shfmt >/dev/null 2>&1; then
-      run shfmt -w "$file_path"
+      run shfmt -w -- "$file_path"
     fi
     ;;
 esac

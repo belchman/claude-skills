@@ -106,7 +106,7 @@ fi
 echo ""
 echo -e "${BOLD}Common Mistakes${RESET}"
 
-if echo "$CONTENT" | grep -qiE '(ghp_[a-zA-Z0-9]{20}|sk-[a-zA-Z0-9]{20}|password\s*[:=]\s*["\x27][^"\x27]+|api[_-]?key\s*[:=]\s*["\x27][^"\x27]+)'; then
+if echo "$CONTENT" | grep -qiE '(ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{82}|glpat-[a-zA-Z0-9_-]{20}|AIza[0-9A-Za-z_-]{35}|sk_(live|test)_[a-zA-Z0-9]{24,}|sk-[a-zA-Z0-9]{32,}|password\s*[:=]\s*["\x27][^"\x27]+|api[_-]?key\s*[:=]\s*["\x27][^"\x27]+)'; then
   error "Possible hardcoded secret detected — never put real credentials in CLAUDE.md"
 else
   pass "No hardcoded secrets detected"
