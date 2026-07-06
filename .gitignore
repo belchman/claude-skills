@@ -21,6 +21,10 @@ logs/
 # /feature orchestrator run state
 .feature_runs/
 
+# local issue queue / pipeline working artifacts — not for the marketplace
+# (files committed before this rule stay tracked; new ones are ignored)
+issues/
+
 # skill-creator eval workspaces (per-skill, generated during iteration)
 plugins/*/skills/*-workspace/
 
