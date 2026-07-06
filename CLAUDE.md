@@ -1,137 +1,77 @@
-# Routing map for `agentic-engineering`
+# claude-skills
 
-The `agentic-engineering` plugin (under `plugins/agentic-engineering/`) bundles
-the composable skills below, organized by **phase of work**. Pick the phase
-first, then the skill.
+A marketplace of individually installable Claude Code plugins (repo: `belchman/claude-skills`). Each plugin under `plugins/` stands alone; the repo root carries the shared tests, tools, and eval harnesses that keep the marketplace consistent.
 
-For the per-skill detail table, see `plugins/agentic-engineering/SKILLS.md`.
-This file is the *routing* map — "which phase am I in, and what comes next?"
+## Commands
 
-> `audit-agent-overhead` is **no longer** part of `agentic-engineering`; it
-> ships as a standalone plugin at `plugins/audit-agent-overhead/`.
+- `make lint`: shellcheck over agent-loop bin/hook scripts (skips gracefully if shellcheck is missing; CI enforces)
+- `make test-sync`: parity guard across `marketplace.json`, `plugins/*/plugin.json`, and `README.md`
+- `make test-fast`: fast suite, about 5s (pytest, feature helpers, work-issues lib, agent-loop wired). The Stop hook (`.claude/hooks/test-on-stop.sh`) runs this after every turn.
+- `make test`: full suite, about 4 min. Adds agent-loop bin/hook/loop/watch suites and the `/feature` orchestrator integration tests.
+- `bash tools/lint-claude-md.sh`: lint this file (the claude-md-audit hook runs the same checks on write)
 
-> `agent-loop` is a standalone plugin at `plugins/agent-loop/` — a goal-driven
-> loop harness (`/agent-loop init|new|run|approve|reject|status|doctor|canonize`).
-> Reach for it when the work is **one durable goal in any repo**, with no
-> `issues/` queue: `new` writes a goal spec (`GOAL.md` + `goal.json`), `run`
-> executes plan→act→verify iterations with human plan approval, and
-> `bin/al-loop.sh` ticks the loop from a scheduler. Design:
-> `docs/agent-loop-design.md`. Evals: `evals/agent-loop/` (fixture paths are
-> local-only via gitignored `fixtures.local.json` — never commit fixture
-> identities).
-
-## The build pipeline
+Distribution is the plugin marketplace, not a sync to `~/.claude/skills`:
 
 ```
-nothing yet                  → write-a-prd       → issues/prd.md
-issues/prd.md                → prd-to-issues     → issues/NNN-*.md (HITL or AFK)
-issues/NNN-*.md              → write-a-spec      → issues/NNN-*.spec.md   (optional sidecar; required for /feature lane scoping)
-issues/NNN-*.md              → write-a-rubric    → issues/NNN-*.rubric.md (optional sidecar)
-issues/NNN-*.md (AFK)        → work-issues       → commits + issues/done/NNN-*.md (sidecars travel)
-brief                        → /feature          → runs the whole chain end-to-end with 3 checkpoints (resumable)
+/plugin marketplace add belchman/claude-skills
+/plugin install agentic-engineering@belchman-claude-skills
 ```
 
-## Phase map
+`.claude/settings.json` registers this checkout as a local marketplace (`extraKnownMarketplaces`), so edits here are live for dogfooding.
 
-| Phase | Skills | What's it for |
-| --- | --- | --- |
-| **1. Pipeline** | `write-a-prd`, `prd-to-issues`, `write-a-spec`, `write-a-rubric`, `/work-issues`, `/feature` | Brief → PRD → issues → spec → autonomous work, or `/feature` for the whole chain on one brief. |
-| **2. Design** | `grill-with-docs`, `grill-me`, `prototype` | Stress-test a plan before code changes. |
-| **3. Implement** | `tdd`, `improve-codebase-architecture`, `evolve` | Move the code itself. |
-| **4. Debug** | `diagnose`, `/zoom-out` | Find and fix what's broken. |
-| **5. Review** | `/adversarial-review`, `crap` | Audit existing code for gaps and risk. |
-| **6. Document** | `/map` | Keep `ARCHITECTURE.md` current. |
+## Architecture: how skills are organized
 
-## Decision tree
+- `.claude-plugin/marketplace.json`: manifest listing the four plugins
+- `plugins/<plugin>/`: standalone plugin. Skills live at `plugins/<plugin>/skills/<skill>/SKILL.md`, plus optional `bin/`, `hooks/`, `agents/`, `templates/`
+- `tests/`: repo-level pytest + shell suites; `tools/`: CLAUDE.md linter/generator, benchmark and cost scripts
+- `evals/agent-loop/`: eval harness; fixture paths come from gitignored `fixtures.local.json`
+- `issues/`, `.feature_runs/`, `.claude/agent-loop/`: artifacts from dogfooding the pipeline skills on this repo
+- Docs: `ARCHITECTURE.md` (map), `CONTEXT.md` (glossary), `docs/adr/` (decisions), `docs/agent-loop-design.md`
 
-| User wants… | Phase | Skill |
-| --- | --- | --- |
-| A PRD from a brief | Pipeline | `write-a-prd` |
-| Work tickets from an existing PRD | Pipeline | `prd-to-issues` |
-| A grader-checkable rubric for an issue/PRD | Pipeline | `write-a-rubric` |
-| A technical spec / brief from an approved story (data model, API, file-by-file with lane allowlists, tests, risks) | Pipeline | `write-a-spec` |
-| To autonomously work the issue queue | Pipeline | `/work-issues` (slash-only) |
-| To orchestrate the full chain on one brief — research → story → spec → rubric → backend → validator → frontend → validator → PR, with three human checkpoints | Pipeline | `/feature` (slash-only) |
-| To stress-test a plan / interrogate a design (default) | Design | **`grill-with-docs`** |
-| To brainstorm with no project context at all (rare) | Design | `grill-me` |
-| To flush out a design before committing | Design | `prototype` |
-| TDD on a behavior change | Implement | `tdd` |
-| To find architectural friction / deep-module candidates | Implement | `improve-codebase-architecture` |
-| Best-of-N search against a measurable evaluator | Implement | `evolve` |
-| To debug a bug or perf regression | Debug | `diagnose` |
-| To understand unfamiliar code | Debug | `/zoom-out` (slash-only) |
-| To find cross-cutting gaps in docs/config/tests | Review | `/adversarial-review` (slash-only) |
-| To find the riskiest function on the branch | Review | `crap` |
-| To generate or update `ARCHITECTURE.md` | Document | `/map` (slash-only) |
-| To audit Claude Code's own overhead | (separate plugin) | `/audit-agent-overhead` — in `plugins/audit-agent-overhead/` |
-| To iterate on one durable goal spec — plan→act→verify with human plan approval, any repo, no issue queue | (separate plugin) | `/agent-loop` — in `plugins/agent-loop/` (slash-only) |
-| To run that goal loop unattended (cron / launchd / systemd / CI tick) | (separate plugin) | `agent-loop`'s `bin/al-loop.sh` |
+## Plugin catalog
 
-## Pairs that look similar — pick which
+- `agentic-engineering`: the build/review/debug pipeline, grouped by phase.
+  - Pipeline: `write-a-prd`, `prd-to-issues`, `write-a-spec`, `write-a-rubric`, `work-issues`, `feature` (end-to-end orchestrator, three human checkpoints, state in `.feature_runs/<id>/state.json`)
+  - Design: `grill-with-docs` (default), `grill-me` (no-codebase only), `prototype`
+  - Implement: `tdd`, `improve-codebase-architecture`, `evolve` (vendored, score-driven search)
+  - Debug: `diagnose`, `zoom-out`; Review: `adversarial-review`, `crap`; Document: `map`
+  - Plus `*-workspace` helper skills. Per-skill detail table: `plugins/agentic-engineering/SKILLS.md`
+- `agent-loop`: goal-driven loop harness. `/agent-loop init, new, run, approve, reject, status, doctor, canonize`; headless tick via `bin/al-loop.sh`; state in `.claude/agent-loop/`. For one durable goal in any repo, no `issues/` queue.
+- `audit-agent-overhead`: audits a Claude Code setup (global, project, plugin scope) for overhead.
+- `claude-md-audit`: no skills, just a PreToolUse hook that lints CLAUDE.md on every Edit/Write and blocks writes that fail lint errors.
 
-| Both about | Default | When to flip |
-| --- | --- | --- |
-| Interrogating a plan | **`grill-with-docs`** | Use `grill-me` only when there's no codebase at all. |
-| Things "going wrong" | `diagnose` | If **Claude Code itself** is slow / hitting limits, use `/audit-agent-overhead` (separate plugin). |
-| Iterating on code | `tdd` | Use `evolve` when the spec is *a score*, not a behavior. |
-| Reviewing code | `/adversarial-review` | Cross-cutting gaps (docs ↔ config ↔ tests). |
-| Reviewing code | `crap` | A single risky function (complexity × poor coverage). |
-| Autonomous iteration | `/work-issues` | Use `/agent-loop` (separate plugin) when there's no `issues/` queue — one goal spec iterated with per-plan human approval, schedulable via `al-loop.sh`. |
-| Orchestrating autonomous work | `/feature` | `/feature` drives one *brief* through the PRD→issues pipeline with 3 fixed checkpoints; `/agent-loop` iterates one *open-ended goal*, gating every plan, until its done-means checklist is verified. |
-| Loop-style iteration | `/agent-loop` | Use `evolve` when "done" is a *score* to maximize; `/agent-loop` when "done" is a *checklist* (done-means) verified by commands + a rubric. |
+Build pipeline: brief, then `write-a-prd` makes `issues/prd.md`, `prd-to-issues` makes `issues/NNN-*.md`, `write-a-spec` and `write-a-rubric` add sidecars, `work-issues` works AFK items to `issues/done/`. `/feature` runs the whole chain on one brief.
 
-## Conventions assumed by these skills
+Heavyweight skills are slash-only: `/feature` and `/zoom-out` and `/agent-loop` via `disable-model-invocation: true` frontmatter (hard gate); `/work-issues`, `/adversarial-review`, `/map` via "Use only when explicitly asked" description prose (soft gate, so `/feature` can dispatch them programmatically).
 
-| Path / file | Purpose | Created by |
-| --- | --- | --- |
-| `issues/*.md` | Local markdown issue queue (HITL or AFK tagged) | `prd-to-issues` |
-| `issues/prd.md` | Project PRD | `write-a-prd` |
-| `issues/done/` | Completed issues archive | `work-issues` |
-| `issues/NNN-*.rubric.md` | Sidecar grader-checkable success criteria for an issue | `write-a-rubric` |
-| `rubrics/*.md` | Free-form / PRD-level rubrics not tied to a specific issue | `write-a-rubric` |
-| `CONTEXT.md` | Project domain glossary (DDD shared language) | `grill-with-docs` (lazily) |
-| `CONTEXT-MAP.md` | Multi-context map (root) | manual |
-| `docs/adr/NNNN-*.md` | Architectural decision records | `grill-with-docs` (lazily, when threshold met) |
-| `.evolve_runs/<run-name>/` | Per-run state: `run_spec.yaml`, `cognition_seed.md`, `preflight_summary.md`, `cognition_data/`, `database_data/`, `steps/`, `best/` | `evolve` |
-| `ARCHITECTURE.md` | Living map of structure, deps, high-coupling zones | `/map` |
-| `.claude/agent-loop/` | agent-loop per-repo state — `GOAL.md` + `goal.json` (the contract), `policy.json` (org floors) and `vault/` (durable canon) are commit-worthy; `state.json`, `audit.jsonl`, `MEMORY.md`, `archive/`, `logs/`, `.lease/` are runtime-only (gitignored) | `/agent-loop init` / `new`; `policy.json` by the org (separate plugin) |
+## Current state (checked 2026-07-06)
 
-**ADR threshold** (offer an ADR only when ALL three hold):
+- Branch `master`, remote `origin` = `belchman/claude-skills`, local master is 5 commits ahead of `origin/master` (last commit 2026-07-05: CI make targets, marketplace-sync guard, nightly eval workflows)
+- 11 dirty files, two threads of WIP:
+  - agent-loop watch feature: untracked `plugins/agent-loop/bin/al-watch`, `tests/test_agent_loop_watch.sh`, `tests/test_agent_loop_wired.sh`; modified `Makefile` and `plugins/agent-loop/skills/agent-loop/SKILL.md`
+  - dogfood run of the pipeline on issue 0001 (optimize feature.sh for prompt cache): untracked `issues/0001-*.md` story/spec/rubric, `issues/research/`, `.claude/agent-loop/GOAL.md` + `goal.json`
 
-1. Hard to reverse — meaningful cost to change later.
-2. Surprising without context — a future reader looks at the code and asks "why on earth?".
-3. Real trade-off — there were genuine alternatives.
+## Conventions for writing or editing skills
+
+- Every skill is `plugins/<plugin>/skills/<name>/SKILL.md` with YAML frontmatter; the `description:` field is the trigger, so include explicit trigger phrases, and gate heavyweight skills (frontmatter flag or description prose as above)
+- Keep `marketplace.json`, each `plugins/*/plugin.json`, and the README plugin sections in sync; `make test-sync` fails otherwise
+- Vendored skills (mattpocock/skills, MIT; GAIR-NLP/ASI-Evolve, Apache 2.0) need per-file entries in `plugins/agentic-engineering/ATTRIBUTION.md`
+- Skills communicate through a small artifact contract: `issues/*.md`, `issues/NNN-*.spec.md` and `.rubric.md` sidecars, `issues/prd.md`, `issues/done/`, `rubrics/*.md`, `CONTEXT.md`, `docs/adr/NNNN-*.md`, `ARCHITECTURE.md`
+- ADR threshold, offer one only when all three hold: hard to reverse, surprising without context, real trade-off
 
 ## Lane boundaries
 
-The `/feature` orchestrator and `/work-issues` (when invoked with a lane preamble) scope each lane's allowlist via a per-lane prompt (`## Allowlist` block + escape valve). Lane labels in `issues/NNN-*.spec.md` H3 headings must match the labels declared in this section. **For `claude-skills` there is no real backend/frontend split** — this repo is a flat marketplace of skills, so the two labels below are illustrative only and used exclusively by the integration tests in `tests/test_feature_orchestrator.sh`.
+Canonical lane vocabulary read by `write-a-spec` and the `/feature` orchestrator. Spec lane H3 headings must match these labels character for character, including case. This repo has no real backend/frontend split; the labels below are illustrative and exercised by `tests/test_feature_orchestrator.sh`.
 
-- `backend` — illustrative patterns: `plugins/*/skills/*/bin/*.sh`, `plugins/*/skills/crap/*.py`, `tests/test_*.sh`
-- `frontend` — illustrative patterns: `plugins/*/skills/*/SKILL.md`, `plugins/*/SKILLS.md`, `README.md`
+- `backend`: patterns like `plugins/*/skills/*/bin/*.sh`, `plugins/*/skills/crap/*.py`, `tests/test_*.sh`
+- `frontend`: patterns like `plugins/*/skills/*/SKILL.md`, `plugins/*/SKILLS.md`, `README.md`
 
-A downstream repo using `/feature` **must define its own** `## Lane boundaries` section in its own `CLAUDE.md` reflecting that repo's actual backend/frontend (or backend/CLI, or service/library) split. The `write-a-spec` skill reads this section to allocate file lists to the right lane; if it's missing, the resulting spec carries a Risks-section note and the user picks the labels at Checkpoint 2.
+## Do NOT (gotchas)
 
-## Heavyweight skills (slash-only by intent)
-
-Skills below are intended for explicit slash invocation only. Two enforcement
-mechanisms are in use:
-
-- **Hard gate**: `disable-model-invocation: true` in the SKILL.md frontmatter. The runtime refuses to fire the skill from conversational context — only explicit slash invocation works.
-- **Soft gate**: prose in the `description:` field ("Use only when explicitly asked…"). Softer than the flag, but lets another orchestrator skill (`/feature`) dispatch them programmatically when needed.
-
-| Skill | Enforcement | What it does |
-| --- | --- | --- |
-| `/zoom-out` | hard (frontmatter flag) | narrowly purposed micro-skill |
-| `/feature` | hard (frontmatter flag) | orchestrates the chain end-to-end; commits via lane builders |
-| `/work-issues` | soft (description prose) | commits code, modifies the issue queue; `/feature` dispatches per lane |
-| `/adversarial-review` | soft (description prose) | dispatches parallel agents, can modify files; `/feature` dispatches for validator |
-| `/map` | soft (description prose) | writes `ARCHITECTURE.md`, dispatches parallel agents; `/feature` dispatches `step_refresh_map` |
-| `/audit-agent-overhead` | separate plugin | walks plugin scope, ~5KB SKILL.md + audit script |
-| `/agent-loop` | separate plugin, hard (frontmatter flag) | builds the harness plane, runs plan→act→verify loops, writes `.claude/agent-loop/` state |
-
-## Attribution
-
-Several skills are vendored from `mattpocock/skills` (MIT) and
-`GAIR-NLP/ASI-Evolve` (Apache 2.0). Per-file attribution:
-`plugins/agentic-engineering/ATTRIBUTION.md`. License texts:
-`plugins/agentic-engineering/licenses/`.
+- Do NOT `git push`: it is denied in `.claude/settings.json`. Commit locally; the user pushes.
+- The Stop hook runs `make test-fast` after every turn. Keep the fast suite green or every turn ends with hook noise.
+- Editing this CLAUDE.md triggers the claude-md-audit lint hook; it blocks on errors (needs an H1 first heading, a Commands section, no secrets).
+- Lane H3 labels in specs are case-sensitive exact matches against `## Lane boundaries`; a mismatch silently skips the lane with status `empty`.
+- Never commit eval fixture identities; `evals/agent-loop` keeps them in gitignored `fixtures.local.json`.
+- `.crap-cache/`, `.feature_runs/`, `mutants/`, `logs/`, `.pytest_cache/` are generated working state; do not hand-edit.
+- Do NOT delete or rename the in-flight `issues/0001-*` artifacts or the untracked agent-loop watch files; they are active WIP.
