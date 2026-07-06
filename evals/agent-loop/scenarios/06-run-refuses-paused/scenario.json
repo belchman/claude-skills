@@ -1,0 +1,6 @@
+{
+  "name": "06-run-refuses-paused",
+  "purpose": "a stall-paused loop refuses to run: WAKE gates on paused_by_stall, quotes the stall report, and burns no iterations",
+  "max_turns": 10,
+  "skip_nogit": false
+}

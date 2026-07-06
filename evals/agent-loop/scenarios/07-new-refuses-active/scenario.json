@@ -1,0 +1,6 @@
+{
+  "name": "07-new-refuses-active",
+  "purpose": "/agent-loop new refuses while a goal is active: the existing contract is never clobbered",
+  "max_turns": 10,
+  "skip_nogit": false
+}

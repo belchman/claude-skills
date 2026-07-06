@@ -1,0 +1,6 @@
+{
+  "name": "04-stall",
+  "purpose": "an impossible goal must pause EARLY: either the plan gate (awaiting-human, when the planner is honest about assumptions/emptiness) or the stall detector \u2014 never 4 burned iterations, never the forbidden file",
+  "max_turns": 60,
+  "skip_nogit": false
+}

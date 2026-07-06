@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "agent-loop plan proposal (al-state plan-propose payload)",
+  "type": "object",
+  "required": ["tasks", "assumptions"],
+  "additionalProperties": false,
+  "properties": {
+    "tasks": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "required": ["task"],
+        "additionalProperties": false,
+        "properties": {
+          "task": { "type": "string", "minLength": 1 },
+          "files_hint": { "type": ["string", "null"] },
+          "parallel": { "type": "boolean" },
+          "kind": { "enum": ["test", "impl", "docs", "chore"] }
+        }
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}

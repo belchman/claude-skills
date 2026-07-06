@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "agent-loop goal.json",
+  "type": "object",
+  "required": ["id", "status", "max_iterations", "context_budget", "verify", "verifier_rubric"],
+  "additionalProperties": false,
+  "properties": {
+    "_comment": { "type": "string" },
+    "id": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["active", "paused", "done", "abandoned"] },
+    "max_iterations": { "type": "integer", "minimum": 1 },
+    "context_budget": { "type": "integer", "minimum": 1000 },
+    "root": { "type": ["string", "null"] },
+    "verify": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["cmd", "expect"],
+        "additionalProperties": false,
+        "properties": {
+          "cmd": { "type": "string", "minLength": 1 },
+          "expect": { "enum": ["exit0"] }
+        }
+      }
+    },
+    "verifier_rubric": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "deep_verify": { "type": "boolean" },
+    "plan_approval": { "enum": ["always", "assumptions"] },
+    "optimize": { "type": "boolean" },
+    "tdd": { "type": "boolean" },
+    "critic": { "type": "boolean" },
+    "critic_model": { "type": "string", "minLength": 1 },
+    "budget_tokens": { "type": "integer", "minimum": 1 }
+  }
+}

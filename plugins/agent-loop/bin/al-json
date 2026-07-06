@@ -1,0 +1,462 @@
+#!/bin/sh
+# al-json — JSON engine shim for agent-loop.
+# Claude Code guarantees no interpreter beyond a shell (native install needs
+# no Node; Python is never mentioned in system requirements), so every JSON
+# operation in agent-loop goes through this shim, which resolves the first
+# available engine: python3 -> node -> jq. Doctor check D13 fails when none
+# is present. Override: AL_JSON_ENGINE=python3|node|jq forces that engine
+# (exit 4 if it is not installed) — used by tests to exercise engine parity.
+#
+# Usage:
+#   al-json engine                              -> prints resolved engine
+#   al-json check <file>                        -> exit 0 iff valid JSON
+#   al-json get <file> <dotted.path>            -> prints value (JSON for
+#                                                  objects/arrays, raw scalar
+#                                                  otherwise); exit 1 if absent
+#   al-json set <file> <dotted.path> <value>    -> atomic in-place update;
+#                                                  value parsed as JSON, else
+#                                                  taken as a string
+#   al-json merge <base> <fragment>             -> deep merge to stdout:
+#                                                  objects recurse, arrays
+#                                                  set-union, scalars keep BASE
+#   al-json append <file> <dotted.path> <item>  -> append item to array at path
+#                                                  (creates the array if absent)
+#   al-json len <file> <dotted.path>             -> prints array/object length
+#   al-json del <file> <dotted.path>             -> atomic key removal (no-op if absent)
+#   al-json line <file>                         -> print the file's JSON as one
+#                                                  compact line (JSONL-ready)
+#   al-json validate <file> <schema>            -> draft-07 subset validation
+#                                                  (type, required, enum,
+#                                                  properties, items,
+#                                                  additionalProperties,
+#                                                  minimum, minLength).
+#                                                  jq engine: required-keys
+#                                                  check only (degraded).
+set -u
+
+if [ -n "${AL_JSON_ENGINE:-}" ]; then
+  case "$AL_JSON_ENGINE" in
+    python3|node|jq)
+      command -v "$AL_JSON_ENGINE" >/dev/null 2>&1 \
+        || { echo "al-json: AL_JSON_ENGINE=$AL_JSON_ENGINE is not installed" >&2; exit 4; }
+      ENGINE="$AL_JSON_ENGINE" ;;
+    *)
+      echo "al-json: invalid AL_JSON_ENGINE '$AL_JSON_ENGINE' (python3|node|jq)" >&2; exit 4 ;;
+  esac
+elif command -v python3 >/dev/null 2>&1; then ENGINE=python3
+elif command -v node >/dev/null 2>&1; then ENGINE=node
+elif command -v jq >/dev/null 2>&1; then ENGINE=jq
+else
+  echo "al-json: no JSON engine found. Install one of: python3, node, jq" >&2
+  exit 4
+fi
+
+CMD="${1:-}"
+[ -n "$CMD" ] || { echo "al-json: missing subcommand (engine|check|get|set|merge|validate)" >&2; exit 2; }
+shift
+
+atomic_write() { # $1=target, stdin=content
+  _t="$1.tmp.$$"
+  cat > "$_t" && mv "$_t" "$1"
+}
+
+run_python() {
+  python3 - "$@" <<'PYEOF'
+import json, sys
+
+def get_path(data, path):
+    cur = data
+    for part in path.split('.'):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        elif isinstance(cur, list) and part.isdigit() and int(part) < len(cur):
+            cur = cur[int(part)]
+        else:
+            raise KeyError(path)
+    return cur
+
+def set_path(data, path, value):
+    parts = path.split('.')
+    cur = data
+    for i, part in enumerate(parts[:-1]):
+        nxt = parts[i + 1]
+        if isinstance(cur, list) and part.isdigit() and int(part) < len(cur):
+            cur = cur[int(part)]
+        elif isinstance(cur, dict):
+            if part not in cur or not isinstance(cur[part], (dict, list)):
+                cur[part] = {}
+            cur = cur[part]
+        else:
+            raise KeyError(path)
+    last = parts[-1]
+    if isinstance(cur, list):
+        if last.isdigit() and int(last) < len(cur):
+            cur[int(last)] = value
+        else:
+            raise KeyError(path)
+    else:
+        cur[last] = value
+
+def merge(base, frag):
+    if isinstance(base, dict) and isinstance(frag, dict):
+        out = dict(base)
+        for k, v in frag.items():
+            out[k] = merge(base[k], v) if k in base else v
+        return out
+    if isinstance(base, list) and isinstance(frag, list):
+        out = list(base)
+        seen = [json.dumps(x, sort_keys=True) for x in base]
+        for x in frag:
+            if json.dumps(x, sort_keys=True) not in seen:
+                out.append(x)
+        return out
+    return base  # scalar conflict: base (existing) wins
+
+def validate(data, schema, path='$'):
+    errs = []
+    t = schema.get('type')
+    if t:
+        types = t if isinstance(t, list) else [t]
+        ok = False
+        for ty in types:
+            if (ty == 'object' and isinstance(data, dict)) or \
+               (ty == 'array' and isinstance(data, list)) or \
+               (ty == 'string' and isinstance(data, str)) or \
+               (ty == 'integer' and isinstance(data, int) and not isinstance(data, bool)) or \
+               (ty == 'number' and isinstance(data, (int, float)) and not isinstance(data, bool)) or \
+               (ty == 'boolean' and isinstance(data, bool)) or \
+               (ty == 'null' and data is None):
+                ok = True
+        if not ok:
+            errs.append(f"{path}: expected type {t}, got {type(data).__name__}")
+            return errs
+    if 'enum' in schema and data not in schema['enum']:
+        errs.append(f"{path}: {data!r} not in enum {schema['enum']}")
+    if isinstance(data, str) and 'minLength' in schema and len(data) < schema['minLength']:
+        errs.append(f"{path}: shorter than minLength {schema['minLength']}")
+    if isinstance(data, (int, float)) and not isinstance(data, bool) and 'minimum' in schema and data < schema['minimum']:
+        errs.append(f"{path}: {data} < minimum {schema['minimum']}")
+    if isinstance(data, dict):
+        for req in schema.get('required', []):
+            if req not in data:
+                errs.append(f"{path}: missing required key '{req}'")
+        props = schema.get('properties', {})
+        for k, v in data.items():
+            if k in props:
+                errs.extend(validate(v, props[k], f"{path}.{k}"))
+            elif schema.get('additionalProperties') is False:
+                errs.append(f"{path}: unexpected key '{k}'")
+            elif isinstance(schema.get('additionalProperties'), dict):
+                errs.extend(validate(v, schema['additionalProperties'], f"{path}.{k}"))
+    if isinstance(data, list) and isinstance(schema.get('items'), dict):
+        for i, item in enumerate(data):
+            errs.extend(validate(item, schema['items'], f"{path}[{i}]"))
+    return errs
+
+cmd = sys.argv[1]
+if cmd == 'check':
+    try:
+        json.load(open(sys.argv[2]))
+    except Exception as e:
+        print(f"al-json: invalid JSON in {sys.argv[2]}: {e}", file=sys.stderr)
+        sys.exit(1)
+elif cmd == 'get':
+    data = json.load(open(sys.argv[2]))
+    try:
+        v = get_path(data, sys.argv[3])
+    except KeyError:
+        sys.exit(1)
+    print(json.dumps(v) if isinstance(v, (dict, list)) else
+          ('null' if v is None else (json.dumps(v) if isinstance(v, bool) else str(v))))
+elif cmd == 'set':
+    data = json.load(open(sys.argv[2]))
+    raw = sys.argv[4]
+    try:
+        val = json.loads(raw)
+    except Exception:
+        val = raw
+    set_path(data, sys.argv[3], val)
+    print(json.dumps(data, indent=2))
+elif cmd == 'append':
+    data = json.load(open(sys.argv[2]))
+    raw = sys.argv[4]
+    try:
+        val = json.loads(raw)
+    except Exception:
+        val = raw
+    try:
+        arr = get_path(data, sys.argv[3])
+    except KeyError:
+        arr = []
+        set_path(data, sys.argv[3], arr)
+    if not isinstance(arr, list):
+        print(f"al-json: {sys.argv[3]} is not an array", file=sys.stderr)
+        sys.exit(1)
+    arr.append(val)
+    print(json.dumps(data, indent=2))
+elif cmd == 'len':
+    data = json.load(open(sys.argv[2]))
+    try:
+        v = get_path(data, sys.argv[3])
+    except KeyError:
+        sys.exit(1)
+    print(len(v))
+elif cmd == 'del':
+    data = json.load(open(sys.argv[2]))
+    parts = sys.argv[3].split('.')
+    cur = data
+    for part in parts[:-1]:
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        else:
+            cur = None
+            break
+    if isinstance(cur, dict):
+        cur.pop(parts[-1], None)
+    print(json.dumps(data, indent=2))
+elif cmd == 'line':
+    print(json.dumps(json.load(open(sys.argv[2])), separators=(',', ':')))
+elif cmd == 'merge':
+    base = json.load(open(sys.argv[2]))
+    frag = json.load(open(sys.argv[3]))
+    print(json.dumps(merge(base, frag), indent=2))
+elif cmd == 'validate':
+    data = json.load(open(sys.argv[2]))
+    schema = json.load(open(sys.argv[3]))
+    errs = validate(data, schema)
+    for e in errs:
+        print(e, file=sys.stderr)
+    sys.exit(1 if errs else 0)
+else:
+    print(f"al-json: unknown subcommand {cmd}", file=sys.stderr)
+    sys.exit(2)
+PYEOF
+}
+
+run_node() {
+  node - "$@" <<'NODEEOF'
+const fs = require('fs');
+const args = process.argv.slice(2);
+const load = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));
+const cmd = args[0];
+function getPath(data, path) {
+  let cur = data;
+  for (const part of path.split('.')) {
+    if (cur !== null && typeof cur === 'object' && !Array.isArray(cur) && part in cur) cur = cur[part];
+    else if (Array.isArray(cur) && /^\d+$/.test(part) && Number(part) < cur.length) cur = cur[Number(part)];
+    else throw new Error('absent');
+  }
+  return cur;
+}
+function setPath(data, path, value) {
+  const parts = path.split('.');
+  let cur = data;
+  for (const part of parts.slice(0, -1)) {
+    if (Array.isArray(cur)) {
+      // out-of-range/non-numeric array segments must error, not pad the array
+      if (/^\d+$/.test(part) && Number(part) < cur.length) { cur = cur[Number(part)]; continue; }
+      throw new Error('absent');
+    }
+    if (cur === null || typeof cur !== 'object') throw new Error('absent');
+    if (typeof cur[part] !== 'object' || cur[part] === null) cur[part] = {};
+    cur = cur[part];
+  }
+  const last = parts[parts.length - 1];
+  if (Array.isArray(cur)) {
+    if (/^\d+$/.test(last) && Number(last) < cur.length) cur[Number(last)] = value;
+    else throw new Error('absent');
+  } else cur[last] = value;
+}
+function merge(base, frag) {
+  const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
+  if (isObj(base) && isObj(frag)) {
+    const out = { ...base };
+    for (const [k, v] of Object.entries(frag)) out[k] = k in base ? merge(base[k], v) : v;
+    return out;
+  }
+  if (Array.isArray(base) && Array.isArray(frag)) {
+    const out = [...base];
+    const seen = new Set(base.map((x) => JSON.stringify(x)));
+    for (const x of frag) if (!seen.has(JSON.stringify(x))) out.push(x);
+    return out;
+  }
+  return base;
+}
+function validate(data, schema, path = '$') {
+  const errs = [];
+  const typeOf = (d) =>
+    d === null ? 'null' : Array.isArray(d) ? 'array' :
+    typeof d === 'number' ? (Number.isInteger(d) ? 'integer' : 'number') : typeof d;
+  if (schema.type) {
+    const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+    const t = typeOf(data);
+    const ok = types.some((ty) => ty === t || (ty === 'number' && t === 'integer'));
+    if (!ok) { errs.push(`${path}: expected type ${types}, got ${t}`); return errs; }
+  }
+  if (schema.enum && !schema.enum.includes(data)) errs.push(`${path}: ${JSON.stringify(data)} not in enum`);
+  if (typeof data === 'string' && schema.minLength != null && data.length < schema.minLength)
+    errs.push(`${path}: shorter than minLength ${schema.minLength}`);
+  if (typeof data === 'number' && schema.minimum != null && data < schema.minimum)
+    errs.push(`${path}: ${data} < minimum ${schema.minimum}`);
+  if (data !== null && typeof data === 'object' && !Array.isArray(data)) {
+    for (const req of schema.required || []) if (!(req in data)) errs.push(`${path}: missing required key '${req}'`);
+    const props = schema.properties || {};
+    for (const [k, v] of Object.entries(data)) {
+      if (k in props) errs.push(...validate(v, props[k], `${path}.${k}`));
+      else if (schema.additionalProperties === false) errs.push(`${path}: unexpected key '${k}'`);
+      else if (typeof schema.additionalProperties === 'object')
+        errs.push(...validate(v, schema.additionalProperties, `${path}.${k}`));
+    }
+  }
+  if (Array.isArray(data) && schema.items && typeof schema.items === 'object')
+    data.forEach((item, i) => errs.push(...validate(item, schema.items, `${path}[${i}]`)));
+  return errs;
+}
+try {
+  if (cmd === 'check') { load(args[1]); }
+  else if (cmd === 'get') {
+    let v;
+    try { v = getPath(load(args[1]), args[2]); } catch { process.exit(1); }
+    console.log(v !== null && typeof v === 'object' ? JSON.stringify(v)
+      : typeof v === 'boolean' || v === null ? JSON.stringify(v) : String(v));
+  } else if (cmd === 'set') {
+    const data = load(args[1]);
+    let val; try { val = JSON.parse(args[3]); } catch { val = args[3]; }
+    setPath(data, args[2], val);
+    console.log(JSON.stringify(data, null, 2));
+  } else if (cmd === 'append') {
+    const data = load(args[1]);
+    let val; try { val = JSON.parse(args[3]); } catch { val = args[3]; }
+    let arr;
+    try { arr = getPath(data, args[2]); } catch { arr = null; }
+    if (arr === null || arr === undefined) { arr = []; setPath(data, args[2], arr); }
+    if (!Array.isArray(arr)) { console.error(`al-json: ${args[2]} is not an array`); process.exit(1); }
+    arr.push(val);
+    console.log(JSON.stringify(data, null, 2));
+  } else if (cmd === 'len') {
+    let v; try { v = getPath(load(args[1]), args[2]); } catch { process.exit(1); }
+    console.log(Array.isArray(v) ? v.length : Object.keys(v).length);
+  } else if (cmd === 'del') {
+    const data = load(args[1]);
+    const parts = args[2].split('.');
+    let cur = data;
+    for (const part of parts.slice(0, -1)) {
+      if (cur !== null && typeof cur === 'object' && part in cur) cur = cur[part];
+      else { cur = null; break; }
+    }
+    if (cur !== null && typeof cur === 'object') delete cur[parts[parts.length - 1]];
+    console.log(JSON.stringify(data, null, 2));
+  } else if (cmd === 'line') {
+    console.log(JSON.stringify(load(args[1])));
+  } else if (cmd === 'merge') {
+    console.log(JSON.stringify(merge(load(args[1]), load(args[2])), null, 2));
+  } else if (cmd === 'validate') {
+    const errs = validate(load(args[1]), load(args[2]));
+    errs.forEach((e) => console.error(e));
+    process.exit(errs.length ? 1 : 0);
+  } else { console.error(`al-json: unknown subcommand ${cmd}`); process.exit(2); }
+} catch (e) { console.error(`al-json: ${e.message}`); process.exit(1); }
+NODEEOF
+}
+
+run_jq() {
+  # Degraded engine: core ops full-fidelity; validate = required-top-level-keys only.
+  # rp: dotted path -> real jq path. A segment is coerced to a number ONLY
+  # when the value being indexed at that point is an array — numeric-string
+  # OBJECT keys ("0") stay strings. Presence is checked against [paths] (jq
+  # enumerates paths to null leaves too), so absent paths exit 1 like the
+  # python/node engines. setp mirrors python set_path: creates intermediate
+  # objects, errors on out-of-range array indices instead of null-padding.
+  _jqlib='
+    def rp($parts):
+      reduce $parts[] as $seg ({d: ., p: []};
+        if (.d|type) == "array" and ($seg|test("^[0-9]+$"))
+        then {d: .d[($seg|tonumber)], p: (.p + [($seg|tonumber)])}
+        elif (.d|type) == "object"
+        then {d: .d[$seg], p: (.p + [$seg])}
+        else {d: null, p: (.p + [$seg])}
+        end)
+      | .p;
+    def setp($parts; $v):
+      $parts[0] as $seg |
+      if ($parts|length) == 1 then
+        if type == "array" then
+          (if ($seg|test("^[0-9]+$")) and (($seg|tonumber) < length)
+           then .[($seg|tonumber)] = $v
+           else error("al-json: bad array index \($seg)") end)
+        elif type == "object" or type == "null" then (. // {}) | .[$seg] = $v
+        else error("al-json: cannot index \(type) with \($seg)") end
+      else
+        if type == "array" then
+          (if ($seg|test("^[0-9]+$")) and (($seg|tonumber) < length)
+           then .[($seg|tonumber)] = (.[($seg|tonumber)] | setp($parts[1:]; $v))
+           else error("al-json: bad array index \($seg)") end)
+        elif type == "object" or type == "null" then
+          (. // {}) | .[$seg] = ((.[$seg] | if type=="object" or type=="array" then . else {} end) | setp($parts[1:]; $v))
+        else error("al-json: cannot index \(type) with \($seg)") end
+      end;
+  '
+  _cmd="$1"; shift
+  case "$_cmd" in
+    check)   jq -e . "$1" >/dev/null || exit 1 ;;
+    get)     jq -r --arg p "$2" "$_jqlib"'. as $d | rp($p|split(".")) as $path
+               | if ([$d|paths] | any(. == $path))
+                 then ($d|getpath($path) | if type=="object" or type=="array" then tojson else tostring end)
+                 else ("al-json: path not found\n" | halt_error(1)) end' "$1" || exit 1 ;;
+    set)     _val="$3"
+             if ! printf '%s' "$_val" | jq -e . >/dev/null 2>&1; then
+               _val=$(printf '%s' "$_val" | jq -R .)
+             fi
+             jq --arg p "$2" --argjson v "$_val" "$_jqlib"'setp($p|split("."); $v)' "$1" || exit 1 ;;
+    append)  _val="$3"
+             if ! printf '%s' "$_val" | jq -e . >/dev/null 2>&1; then
+               _val=$(printf '%s' "$_val" | jq -R .)
+             fi
+             jq --arg p "$2" --argjson v "$_val" "$_jqlib"'($p|split(".")) as $parts | . as $d | rp($parts) as $path
+               | (if ([$d|paths] | any(. == $path)) then ($d|getpath($path)) else null end) as $cur
+               | if $cur != null and ($cur|type) != "array"
+                 then error("al-json: \($p) is not an array")
+                 else setp($parts; (($cur // []) + [$v])) end' "$1" || exit 1 ;;
+    line)    jq -c . "$1" ;;
+    len)     jq -r --arg p "$2" "$_jqlib"'. as $d | rp($p|split(".")) as $path
+               | if ([$d|paths] | any(. == $path))
+                 then ($d|getpath($path) | length)
+                 else ("al-json: path not found\n" | halt_error(1)) end' "$1" || exit 1 ;;
+    del)     jq --arg p "$2" "$_jqlib"'delpaths([rp($p|split("."))])' "$1" ;;
+    merge)   jq -s 'def m(a; b): a as $A | b as $B |
+                 if ($A|type)=="object" and ($B|type)=="object" then
+                   reduce (($A+$B)|keys_unsorted[]) as $k ({}; .[$k] =
+                     (if ($A|has($k)) and ($B|has($k)) then m($A[$k]; $B[$k])
+                      elif ($A|has($k)) then $A[$k] else $B[$k] end))
+                 elif ($A|type)=="array" and ($B|type)=="array" then $A + ($B - $A)
+                 else $A end;
+               m(.[0]; .[1])' "$1" "$2" ;;
+    validate) jq --slurpfile s "$2" '. as $data
+                | ($s[0].required // []) as $req
+                | [$req[] | . as $k | select(($data | has($k)) | not)] as $missing
+                | if ($missing | length) > 0
+                  then ("missing required: " + ($missing | join(","))) | halt_error(1)
+                  else empty end' "$1" >/dev/null ;;
+    *)       echo "al-json: unknown subcommand $_cmd" >&2; exit 2 ;;
+  esac
+}
+
+run_engine() {
+  case "$ENGINE" in
+    python3) run_python "$@" ;;
+    node)    run_node "$@" ;;
+    jq)      run_jq "$@" ;;
+  esac
+}
+
+case "$CMD" in
+  engine) echo "$ENGINE" ;;
+  check|get|len|line|merge|validate)
+    run_engine "$CMD" "$@" ;;
+  set|append|del)
+    FILE="$1"
+    OUT=$(run_engine "$CMD" "$@") || exit $?
+    printf '%s\n' "$OUT" | atomic_write "$FILE"
+    ;;
+  *) echo "al-json: unknown subcommand $CMD" >&2; exit 2 ;;
+esac

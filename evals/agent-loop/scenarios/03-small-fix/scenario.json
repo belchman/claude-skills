@@ -1,0 +1,7 @@
+{
+  "name": "03-small-fix",
+  "purpose": "a single /agent-loop run iteration converges: fixes a planted syntax error, both verify layers pass, state advances, checkbox ticked \u2014 two-phase plan-approval flow: leg 1 proposes and pauses, human approves, leg 2 converges",
+  "max_turns": 40,
+  "skip_nogit": false,
+  "two_phase": true
+}

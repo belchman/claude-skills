@@ -1,0 +1,7 @@
+{
+  "name": "05-fanout",
+  "purpose": "a goal with three independent done-means fans out to parallel workers, synthesizes, verifies, and leaves no leaked worker worktrees \u2014 two-phase: leg 1 proposes a parallel plan and pauses, human approves, leg 2 fans out and converges",
+  "max_turns": 60,
+  "skip_nogit": true,
+  "two_phase": true
+}

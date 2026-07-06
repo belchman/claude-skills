@@ -1,0 +1,3 @@
+/agent-loop run 4
+
+Non-interactive eval run: follow the iteration contract exactly for each iteration, honoring every gate — if a proposed plan awaits human approval, or the state says the loop is paused, stop immediately and report instead of continuing. Do not approve plans yourself.

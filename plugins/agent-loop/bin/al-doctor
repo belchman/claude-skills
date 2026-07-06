@@ -1,0 +1,278 @@
+#!/bin/sh
+# al-doctor — harness-plane health check ("is the folder underneath set up?").
+# Deliberately separate from /agent-loop status (loop health): harness
+# problems and loop problems are different diseases.
+#
+# Output: one line per check
+#   CHECK D## PASS|WARN|FAIL <message> (references/doctor-checks.md#d##)
+# Exit 0 iff no FAIL (WARNs allowed) — CI-friendly.
+#
+# Usage: al-doctor [<repo-dir>]     (default: $CLAUDE_PROJECT_DIR or cwd)
+set -u
+
+BIN_DIR=$(dirname "$0")
+ALJSON="$BIN_DIR/al-json"
+REPO="${1:-${CLAUDE_PROJECT_DIR:-.}}"
+AL_DIR="$REPO/.claude/agent-loop"
+SETTINGS="$REPO/.claude/settings.json"
+SETTINGS_LOCAL="$REPO/.claude/settings.local.json"
+GOAL_MD="$AL_DIR/GOAL.md"
+GOAL_JSON="$AL_DIR/goal.json"
+STATE="$AL_DIR/state.json"
+
+FAILS=0
+report() { # $1=id $2=level $3=msg
+  echo "CHECK $1 $2 $3 (references/doctor-checks.md#$(echo "$1" | tr 'A-Z' 'a-z'))"
+  [ "$2" = "FAIL" ] && FAILS=$((FAILS + 1))
+  return 0
+}
+
+al_digest() { # stdin -> sha256 hex (must match al-state's helper exactly)
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1
+  elif command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
+  elif command -v openssl >/dev/null 2>&1; then openssl dgst -sha256 | sed 's/^.* //'
+  else cksum | cut -d' ' -f1
+  fi
+}
+
+# D01 CLAUDE.md exists
+if [ -f "$REPO/CLAUDE.md" ]; then
+  report D01 PASS "CLAUDE.md present"
+else
+  report D01 FAIL "no CLAUDE.md — run /agent-loop init (or write one)"
+fi
+
+# D02 CLAUDE.md length (official guidance: under 200 lines)
+if [ -f "$REPO/CLAUDE.md" ]; then
+  LINES=$(wc -l < "$REPO/CLAUDE.md" | tr -d ' ')
+  if [ "$LINES" -le 200 ]; then
+    report D02 PASS "CLAUDE.md is $LINES lines (target: <200)"
+  else
+    report D02 WARN "CLAUDE.md is $LINES lines — over the 200-line guidance; prune it"
+  fi
+else
+  report D02 WARN "no CLAUDE.md to measure"
+fi
+
+# D03 settings.json valid JSON
+if [ -f "$SETTINGS" ]; then
+  if "$ALJSON" check "$SETTINGS" 2>/dev/null; then
+    report D03 PASS ".claude/settings.json is valid JSON"
+  else
+    report D03 FAIL ".claude/settings.json is NOT valid JSON"
+  fi
+else
+  report D03 WARN "no .claude/settings.json (init merges one)"
+fi
+
+# D04 hooks registered
+if [ -f "$SETTINGS" ] && grep -q 'guard-destructive.sh' "$SETTINGS" 2>/dev/null \
+   && grep -q 'format-on-write.sh' "$SETTINGS" 2>/dev/null \
+   && grep -q 'loop-checkpoint.sh' "$SETTINGS" 2>/dev/null; then
+  report D04 PASS "all 3 agent-loop hooks registered in settings.json"
+else
+  report D04 FAIL "agent-loop hooks not (fully) registered — run /agent-loop init"
+fi
+
+# D05 agents present
+MISSING_AGENTS=""
+for a in loop-planner loop-worker loop-verifier loop-optimizer loop-critic; do
+  [ -f "$REPO/.claude/agents/$a.md" ] || MISSING_AGENTS="$MISSING_AGENTS $a"
+done
+if [ -z "$MISSING_AGENTS" ]; then
+  report D05 PASS "loop-planner/worker/verifier/optimizer/critic agents present"
+else
+  report D05 FAIL "missing agents:$MISSING_AGENTS — run /agent-loop init"
+fi
+
+# D06 Decisions non-empty (only when a goal exists)
+if [ -f "$GOAL_MD" ]; then
+  DECISIONS=$(sed -n '/^# Decisions/,/^# /p' "$GOAL_MD" | grep -c '^[-*] ' || true)
+  if [ "$DECISIONS" -ge 1 ]; then
+    report D06 PASS "GOAL.md has $DECISIONS locked-in decision(s)"
+  else
+    report D06 FAIL "GOAL.md '# Decisions' is EMPTY — without decisions the loop guesses, and when it guesses it fabricates"
+  fi
+else
+  report D06 PASS "no active goal (nothing to check)"
+fi
+
+# D07 verify non-empty (WARN)
+if [ -f "$GOAL_JSON" ]; then
+  NV=$("$ALJSON" len "$GOAL_JSON" verify 2>/dev/null || echo 0)
+  if [ "$NV" -ge 1 ]; then
+    report D07 PASS "goal.json has $NV verify command(s)"
+  else
+    report D07 WARN "goal.json verify[] is empty — the deterministic verify layer is OFF; add at least one command"
+  fi
+else
+  report D07 PASS "no active goal (nothing to check)"
+fi
+
+# D08 speculative MCP servers (WARN)
+if [ -f "$REPO/.mcp.json" ]; then
+  NS=$("$ALJSON" len "$REPO/.mcp.json" mcpServers 2>/dev/null || echo 0)
+  if [ "$NS" -gt 0 ]; then
+    report D08 WARN ".mcp.json declares $NS server(s) — keep only servers this work actually needs"
+  else
+    report D08 PASS ".mcp.json present but declares no servers"
+  fi
+else
+  report D08 PASS "no .mcp.json (declare servers only when needed)"
+fi
+
+# D09 state validates
+if [ -f "$STATE" ]; then
+  if "$ALJSON" validate "$STATE" "$BIN_DIR/../templates/state.schema.json" 2>/dev/null; then
+    report D09 PASS "state.json validates against schema"
+  else
+    report D09 FAIL "state.json does NOT validate — the loop cannot trust its own memory"
+  fi
+else
+  report D09 PASS "no state.json yet (created by /agent-loop new)"
+fi
+
+# D10 settings scope conflicts: same rule allowed in one scope, denied in another
+if [ -f "$SETTINGS" ] && [ -f "$SETTINGS_LOCAL" ]; then
+  # list rules one per line via the shim (portable; rules contain spaces)
+  rules_of() { # $1=settings file, $2=permissions.allow|permissions.deny
+    _n=$("$ALJSON" len "$1" "$2" 2>/dev/null) || return 0
+    _i=0
+    while [ "$_i" -lt "$_n" ]; do
+      "$ALJSON" get "$1" "$2.$_i"
+      _i=$((_i + 1))
+    done
+  }
+  CONFLICT=$(
+    { rules_of "$SETTINGS" permissions.allow | while IFS= read -r rule; do
+        rules_of "$SETTINGS_LOCAL" permissions.deny | grep -Fx -- "$rule" || true
+      done
+      rules_of "$SETTINGS_LOCAL" permissions.allow | while IFS= read -r rule; do
+        rules_of "$SETTINGS" permissions.deny | grep -Fx -- "$rule" || true
+      done
+    } | head -1)
+  if [ -n "$CONFLICT" ]; then
+    report D10 WARN "rule '$CONFLICT' is allowed in one settings scope and denied in another (deny wins)"
+  else
+    report D10 PASS "no allow/deny conflicts across settings scopes"
+  fi
+else
+  report D10 PASS "single settings scope (no conflict possible)"
+fi
+
+# D11 vault exists
+if [ -d "$AL_DIR/vault" ]; then
+  report D11 PASS "vault/ present (project canon)"
+else
+  report D11 FAIL "no $AL_DIR/vault/ — run /agent-loop init"
+fi
+
+# D12 goal.json schema-valid
+if [ -f "$GOAL_JSON" ]; then
+  if AL_GOAL_FILE="$GOAL_JSON" "$BIN_DIR/al-goal" validate >/dev/null 2>&1; then
+    report D12 PASS "goal.json validates against goal.schema.json"
+  else
+    report D12 FAIL "goal.json is invalid — run al-goal validate for details"
+  fi
+else
+  report D12 PASS "no active goal (nothing to check)"
+fi
+
+# D14 audit journal integrity (the auditable record must stay parseable)
+AUDIT="$AL_DIR/audit.jsonl"
+if [ -f "$STATE" ]; then
+  if [ ! -f "$AUDIT" ]; then
+    report D14 WARN "no audit.jsonl yet — state exists but no journaled events (older install? re-run /agent-loop init)"
+  else
+    BADLINES=0; CHAINBREAKS=0; LEGACY=0; PREV_DIGEST=""
+    while IFS= read -r line; do
+      printf '%s' "$line" > "$AL_DIR/.d14.$$"
+      if ! "$ALJSON" check "$AL_DIR/.d14.$$" 2>/dev/null; then
+        BADLINES=$((BADLINES + 1))
+      else
+        # tamper evidence: each line's "prev" must equal the sha256 of the
+        # line before it ("genesis" for the first). Rewriting history breaks
+        # every subsequent link.
+        LP=$("$ALJSON" get "$AL_DIR/.d14.$$" prev 2>/dev/null || echo "")
+        if [ -z "$LP" ]; then
+          LEGACY=$((LEGACY + 1))
+        else
+          EXPECT="${PREV_DIGEST:-genesis}"
+          [ "$LP" = "$EXPECT" ] || CHAINBREAKS=$((CHAINBREAKS + 1))
+        fi
+      fi
+      PREV_DIGEST=$(printf '%s\n' "$line" | al_digest)
+    done < "$AUDIT"
+    rm -f "$AL_DIR/.d14.$$"
+    NEVENTS=$(wc -l < "$AUDIT" | tr -d ' ')
+    if [ "$BADLINES" -gt 0 ]; then
+      report D14 FAIL "audit.jsonl has $BADLINES unparseable line(s) — the audit record is corrupt"
+    elif [ "$CHAINBREAKS" -gt 0 ]; then
+      report D14 FAIL "audit.jsonl hash chain broken at $CHAINBREAKS link(s) — history may have been rewritten; investigate before trusting it"
+    elif [ "$LEGACY" -gt 0 ]; then
+      report D14 WARN "audit.jsonl intact ($NEVENTS events) but $LEGACY line(s) predate the hash chain — tamper evidence starts after them"
+    else
+      report D14 PASS "audit.jsonl intact ($NEVENTS events, all valid JSON, hash chain verified)"
+    fi
+  fi
+else
+  report D14 PASS "no active goal (nothing to audit)"
+fi
+
+# D13 JSON engine present
+if ENGINE=$("$ALJSON" engine 2>/dev/null); then
+  report D13 PASS "JSON engine: $ENGINE"
+else
+  report D13 FAIL "no JSON engine — install one of python3, node, jq"
+fi
+
+# D15 org policy present, valid, and not weakened by the active goal
+POLICY="$AL_DIR/policy.json"
+if [ -f "$POLICY" ]; then
+  if ! "$ALJSON" check "$POLICY" 2>/dev/null || ! "$ALJSON" validate "$POLICY" "$BIN_DIR/../templates/policy.schema.json" 2>/dev/null; then
+    report D15 FAIL "policy.json is invalid (must match policy.schema.json) — the gates cannot trust it"
+  elif [ -f "$GOAL_JSON" ]; then
+    WEAK=""
+    for f in tdd critic optimize; do
+      PVAL=$("$ALJSON" get "$POLICY" "$f" 2>/dev/null || echo "")
+      GVAL=$("$ALJSON" get "$GOAL_JSON" "$f" 2>/dev/null || echo "")
+      [ "$PVAL" = "true" ] && [ "$GVAL" = "false" ] && WEAK="$WEAK $f"
+    done
+    PP=$("$ALJSON" get "$POLICY" plan_approval 2>/dev/null || echo "")
+    GP=$("$ALJSON" get "$GOAL_JSON" plan_approval 2>/dev/null || echo "")
+    [ "$PP" = "always" ] && [ "$GP" = "assumptions" ] && WEAK="$WEAK plan_approval"
+    if [ -n "$WEAK" ]; then
+      report D15 WARN "goal.json tries to weaken org policy:$WEAK — the gates enforce policy anyway; align goal.json to avoid confusion"
+    else
+      report D15 PASS "org policy present, valid, and respected by the active goal"
+    fi
+  else
+    report D15 PASS "org policy present and valid (no active goal to compare)"
+  fi
+else
+  report D15 PASS "no policy.json (org policy is optional; goals govern themselves)"
+fi
+
+# D16 journal growth bound (append-only forever needs a rotation nudge)
+if [ -f "$AUDIT" ]; then
+  MB_LIMIT="${AL_DOCTOR_JOURNAL_MB:-50}"
+  case "$MB_LIMIT" in ''|*[!0-9]*) MB_LIMIT=50 ;; esac
+  BYTES=$(wc -c < "$AUDIT" | tr -d ' ')
+  if [ "$BYTES" -gt $((MB_LIMIT * 1024 * 1024)) ]; then
+    report D16 WARN "audit.jsonl is $((BYTES / 1024 / 1024))MB (limit ${MB_LIMIT}MB) — close out and archive the goal, or raise AL_DOCTOR_JOURNAL_MB"
+  else
+    report D16 PASS "audit.jsonl within growth bound (${BYTES} bytes, limit ${MB_LIMIT}MB)"
+  fi
+else
+  report D16 PASS "no audit journal yet (nothing to bound)"
+fi
+
+# skill-reuse mode (informational, not a check)
+SK=$("$BIN_DIR/al-detect-skills" 2>/dev/null | grep -o '"agentic_engineering": *[a-z]*' | grep -o '[a-z]*$' || echo unknown)
+echo "INFO skill-reuse: agentic-engineering=$SK (delegate when true, built-in fallback when false)"
+
+if [ "$FAILS" -gt 0 ]; then
+  echo "al-doctor: $FAILS FAIL(s) — the harness plane is not healthy"
+  exit 1
+fi
+echo "al-doctor: harness healthy (no FAILs)"

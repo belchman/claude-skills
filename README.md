@@ -14,6 +14,7 @@ Then install any subset:
 
 ```
 /plugin install agentic-engineering@belchman-claude-skills
+/plugin install agent-loop@belchman-claude-skills
 /plugin install audit-agent-overhead@belchman-claude-skills
 /plugin install claude-md-audit@belchman-claude-skills
 ```
@@ -212,6 +213,26 @@ python3 plugins/agentic-engineering/skills/crap/crap.py score \
 
 ---
 
+### `agent-loop` — goal-driven loop harness
+
+One command builds the Claude Code harness plane (CLAUDE.md stub, merged settings, self-gating hooks, planner/worker/verifier/optimizer agents, a verify skill, memory + vault) in **any repo**; then goal-spec-driven **plan → act → verify → optimize** loops run on top of it — interactively or from a scheduler. Every iteration ends with a fresh-context optimizer proposing spec and verify improvements for the next pass (report-only — the human applies them; the loop never edits its own contract).
+
+```
+/agent-loop init          # build the harness plane (idempotent; shows a settings diff first)
+/agent-loop new "<goal>"  # interview → GOAL.md + goal.json; refuses to finish without a locked Decision
+/agent-loop run           # one plan→act→verify iteration; plans await human approval
+/agent-loop status        # is the loop converging?
+/agent-loop doctor        # harness health, checks D01–D14 (CI-friendly exit codes)
+```
+
+Plans are pressure-tested by a *different model* (`loop-critic`, per-goal `critic_model`) and revised up to twice before pausing `awaiting-human` (`/agent-loop approve` / `reject "<reason>"`) — the gate refuses un-critiqued proposals. Passes are re-verified at the state layer, so the loop can't self-certify, and every event lands in an append-only, **hash-chained, secrets-redacted** `audit.jsonl` with actor attribution. TDD is on by default: the state layer must observe the driving test *fail* (`al-state tdd-red`) before implementation work, and observe the same command *pass* before the iteration can record — red→green, enforced, not advised. Enterprise controls ship in the box: org-managed `policy.json` floors the goal author can't lower, an atomic run lease, token budgets, a scheduler circuit breaker, webhook notifications when the loop blocks on a human, and `al-fleet` for multi-repo visibility. Headless ticks via `bin/al-loop.sh` (cron / launchd / systemd / GitHub Actions) cost zero tokens when there's nothing to do.
+
+**When to pick which:** `/feature` drives one *brief* through the PRD→issues pipeline with three fixed checkpoints; `/work-issues` drains an existing `issues/` queue; `/agent-loop` iterates one *open-ended goal* in any repo, gating every plan; `evolve` searches when "done" is a score rather than a checklist. When `agentic-engineering` is installed, agent-loop delegates its interview to `grill-with-docs`, rubric authoring to `write-a-rubric`, test-shaped tasks to `tdd`, and deep verification to `adversarial-review` — and it runs fully standalone without it.
+
+Full docs (worked example, scheduling recipes, statusline): [`plugins/agent-loop/README.md`](plugins/agent-loop/README.md). Design: [`docs/agent-loop-design.md`](docs/agent-loop-design.md). Slash-only via `disable-model-invocation: true`.
+
+---
+
 ### `audit-agent-overhead` — slash command `/audit-agent-overhead`
 
 Walks `~/.claude`, the current project, and plugin scope looking for the 9 token-waste patterns that silently inflate Claude Code cost: noisy hooks, oversized SKILL.md files, ambient context drift, unbounded transcripts, redundant agents, and friends. Slash-only — runs only on explicit invocation.
@@ -268,7 +289,7 @@ Schema verified against the [official docs](https://code.claude.com/docs/en/stat
 5. `/write-a-rubric` — define gradeable "what done looks like" per issue worth it (`*.rubric.md`)
 6. `/work-issues` (or `bin/loop.sh` for AFK) — autonomously work the queue, lane-scoped if a sibling spec is present
 
-Or run the whole chain on a single brief via `/feature` — see below.
+Or run the whole chain on a single brief via `/feature` — see below. For a single open-ended goal outside an issue queue — or a loop that ticks from a scheduler while you're away — use `/agent-loop` (separate plugin, see above).
 
 **Quality / review (existing code):**
 
@@ -281,6 +302,17 @@ Or run the whole chain on a single brief via `/feature` — see below.
 
 - Drop in `claude-statusline` so context %, per-turn tokens, and cost are always visible
 - `/audit-agent-overhead` quarterly to keep token overhead under control
+
+## Development
+
+One entry point for everything:
+
+```bash
+make test-fast   # ~5s — pytest + marketplace-sync guard + quick bash suites (the Stop hook runs this after every turn)
+make test        # ~4 min — everything above plus the agent-loop bin/hook suites and the /feature orchestrator integration tests (CI runs this)
+```
+
+`tests/test_marketplace_sync.sh` enforces that `.claude-plugin/marketplace.json`, each plugin's `plugin.json`, and this README stay in lockstep (names, versions, descriptions, install lines, section headings) and that plugin hooks use the canonical `hooks/hooks.json` layout. CI (`.github/workflows/ci.yml`) runs the full suite on every push and PR.
 
 ## License
 

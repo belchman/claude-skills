@@ -1,0 +1,6 @@
+{
+  "name": "08-plan-gate",
+  "purpose": "an underspecified goal forces declared assumptions: the loop proposes, pauses awaiting-human with the assumptions surfaced, changes nothing, and the mechanical approve flips the gate open",
+  "max_turns": 15,
+  "skip_nogit": false
+}

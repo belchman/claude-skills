@@ -1,0 +1,6 @@
+{
+  "name": "02-doctor-broken",
+  "purpose": "/agent-loop doctor detects synthetically seeded harness defects (oversized CLAUDE.md, empty Decisions, speculative MCP, unregistered hooks) and reports check IDs",
+  "max_turns": 10,
+  "skip_nogit": false
+}

@@ -1,0 +1,31 @@
+#!/bin/sh
+# al-detect-skills — is the agentic-engineering plugin installed? Drives the
+# detect+fallback branches in SKILL.md (delegate to grill-with-docs /
+# write-a-rubric / tdd / adversarial-review / map when present; built-in
+# minimal procedures otherwise). Filesystem probe only — never fabricates.
+#
+# Output: {"agentic_engineering": bool, "via": "<evidence|null>"}
+# Env override for tests: AGENT_LOOP_SKILLS=0|1
+set -u
+
+if [ "${AGENT_LOOP_SKILLS:-}" = "1" ]; then
+  printf '{"agentic_engineering": true, "via": "AGENT_LOOP_SKILLS env override"}\n'; exit 0
+elif [ "${AGENT_LOOP_SKILLS:-}" = "0" ]; then
+  printf '{"agentic_engineering": false, "via": "AGENT_LOOP_SKILLS env override"}\n'; exit 0
+fi
+
+FOUND=""
+for base in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins" "$HOME/.claude/plugins"; do
+  [ -d "$base" ] || continue
+  HIT=$(find "$base" -maxdepth 4 -type d -name agentic-engineering 2>/dev/null | head -1)
+  if [ -n "$HIT" ] && [ -f "$HIT/.claude-plugin/plugin.json" ]; then
+    FOUND="$HIT"
+    break
+  fi
+done
+
+if [ -n "$FOUND" ]; then
+  printf '{"agentic_engineering": true, "via": "%s"}\n' "$FOUND"
+else
+  printf '{"agentic_engineering": false, "via": null}\n'
+fi

@@ -1,0 +1,46 @@
+#!/bin/sh
+# al-goal — read/validate the machine half of the goal spec (goal.json).
+# Exit 3 with a pointed error on an invalid spec so the loop never runs
+# against a contract it can't trust.
+#
+# Usage:
+#   al-goal [--file <goal.json>] validate
+#   al-goal [--file <goal.json>] get <dotted.path>
+#   al-goal [--file <goal.json>] exists          # exit 0 iff goal.json present
+set -u
+
+BIN_DIR=$(dirname "$0")
+ALJSON="$BIN_DIR/al-json"
+SCHEMA="$BIN_DIR/../templates/goal.schema.json"
+
+GOAL_FILE="${AL_GOAL_FILE:-${CLAUDE_PROJECT_DIR:-.}/.claude/agent-loop/goal.json}"
+if [ "${1:-}" = "--file" ]; then
+  GOAL_FILE="$2"; shift 2
+fi
+
+CMD="${1:-}"
+[ -n "$CMD" ] || { echo "al-goal: missing subcommand (validate|get|exists)" >&2; exit 2; }
+shift
+
+case "$CMD" in
+  exists)
+    [ -f "$GOAL_FILE" ]
+    ;;
+  validate)
+    [ -f "$GOAL_FILE" ] || { echo "al-goal: no goal.json at $GOAL_FILE (run /agent-loop new)" >&2; exit 3; }
+    "$ALJSON" check "$GOAL_FILE" || { echo "al-goal: goal.json is not valid JSON" >&2; exit 3; }
+    if ! "$ALJSON" validate "$GOAL_FILE" "$SCHEMA"; then
+      echo "al-goal: goal.json does not match the spec schema ($SCHEMA)." >&2
+      echo "al-goal: see skills/agent-loop/references/goal-spec.md for the format." >&2
+      exit 3
+    fi
+    echo "al-goal: valid"
+    ;;
+  get)
+    [ -f "$GOAL_FILE" ] || exit 1
+    "$ALJSON" get "$GOAL_FILE" "${1:?al-goal get: path required}"
+    ;;
+  *)
+    echo "al-goal: unknown subcommand $CMD" >&2; exit 2
+    ;;
+esac

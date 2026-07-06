@@ -1,0 +1,7 @@
+{
+  "name": "09-optimize",
+  "purpose": "the OPTIMIZE tail fires on a recorded-but-not-converged iteration: leg 1 proposes and pauses, human approves, leg 2 executes, records a pass that ticks only one of two done-means (docs deferred by Decision), then dispatches loop-optimizer and journals an optimize event — with GOAL.md/goal.json untouched (report-only)",
+  "max_turns": 50,
+  "skip_nogit": false,
+  "two_phase": true
+}

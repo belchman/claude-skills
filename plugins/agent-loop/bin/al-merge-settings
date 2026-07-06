@@ -1,0 +1,51 @@
+#!/bin/sh
+# al-merge-settings — merge the plugin's settings fragment into the repo's
+# .claude/settings.json. NEVER overwrites: objects deep-merge, arrays merge
+# as set-union (existing allowlists survive), scalar conflicts keep the
+# existing value. --dry-run prints a unified diff for the human to approve
+# before /agent-loop init applies it.
+#
+# Usage: al-merge-settings [--dry-run] [--target <settings.json>] [--fragment <file>]
+set -u
+
+BIN_DIR=$(dirname "$0")
+ALJSON="$BIN_DIR/al-json"
+
+TARGET="${CLAUDE_PROJECT_DIR:-.}/.claude/settings.json"
+FRAGMENT="$BIN_DIR/../templates/settings.json.tmpl"
+DRY=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run)  DRY=1; shift ;;
+    --target)   TARGET="$2"; shift 2 ;;
+    --fragment) FRAGMENT="$2"; shift 2 ;;
+    *) echo "al-merge-settings: unknown arg $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -f "$FRAGMENT" ] || { echo "al-merge-settings: fragment not found: $FRAGMENT" >&2; exit 1; }
+
+TMPDIR_M=$(mktemp -d)
+trap 'rm -rf "$TMPDIR_M"' EXIT
+
+# fragment minus its _comment key
+cp "$FRAGMENT" "$TMPDIR_M/frag.json"
+"$ALJSON" del "$TMPDIR_M/frag.json" _comment >/dev/null
+
+if [ -f "$TARGET" ]; then
+  "$ALJSON" check "$TARGET" || { echo "al-merge-settings: existing $TARGET is not valid JSON — fix it first" >&2; exit 1; }
+  cp "$TARGET" "$TMPDIR_M/base.json"
+else
+  printf '{}' > "$TMPDIR_M/base.json"
+fi
+
+"$ALJSON" merge "$TMPDIR_M/base.json" "$TMPDIR_M/frag.json" > "$TMPDIR_M/merged.json"
+
+if [ "$DRY" -eq 1 ]; then
+  diff -u "$TMPDIR_M/base.json" "$TMPDIR_M/merged.json" && echo "al-merge-settings: no changes needed"
+  exit 0
+fi
+
+mkdir -p "$(dirname "$TARGET")"
+cp "$TMPDIR_M/merged.json" "$TARGET"
+echo "al-merge-settings: merged fragment into $TARGET"

@@ -1,0 +1,3 @@
+/agent-loop run
+
+Non-interactive eval run: the previously proposed plan has been approved by the human. Follow the iteration contract exactly — WAKE will find the approved plan; execute it (do not re-plan), then VERIFY and RECORD. Do not skip the RECORD step.

@@ -10,6 +10,16 @@ This file is the *routing* map — "which phase am I in, and what comes next?"
 > `audit-agent-overhead` is **no longer** part of `agentic-engineering`; it
 > ships as a standalone plugin at `plugins/audit-agent-overhead/`.
 
+> `agent-loop` is a standalone plugin at `plugins/agent-loop/` — a goal-driven
+> loop harness (`/agent-loop init|new|run|approve|reject|status|doctor|canonize`).
+> Reach for it when the work is **one durable goal in any repo**, with no
+> `issues/` queue: `new` writes a goal spec (`GOAL.md` + `goal.json`), `run`
+> executes plan→act→verify iterations with human plan approval, and
+> `bin/al-loop.sh` ticks the loop from a scheduler. Design:
+> `docs/agent-loop-design.md`. Evals: `evals/agent-loop/` (fixture paths are
+> local-only via gitignored `fixtures.local.json` — never commit fixture
+> identities).
+
 ## The build pipeline
 
 ```
@@ -54,6 +64,8 @@ brief                        → /feature          → runs the whole chain end-
 | To find the riskiest function on the branch | Review | `crap` |
 | To generate or update `ARCHITECTURE.md` | Document | `/map` (slash-only) |
 | To audit Claude Code's own overhead | (separate plugin) | `/audit-agent-overhead` — in `plugins/audit-agent-overhead/` |
+| To iterate on one durable goal spec — plan→act→verify with human plan approval, any repo, no issue queue | (separate plugin) | `/agent-loop` — in `plugins/agent-loop/` (slash-only) |
+| To run that goal loop unattended (cron / launchd / systemd / CI tick) | (separate plugin) | `agent-loop`'s `bin/al-loop.sh` |
 
 ## Pairs that look similar — pick which
 
@@ -64,6 +76,9 @@ brief                        → /feature          → runs the whole chain end-
 | Iterating on code | `tdd` | Use `evolve` when the spec is *a score*, not a behavior. |
 | Reviewing code | `/adversarial-review` | Cross-cutting gaps (docs ↔ config ↔ tests). |
 | Reviewing code | `crap` | A single risky function (complexity × poor coverage). |
+| Autonomous iteration | `/work-issues` | Use `/agent-loop` (separate plugin) when there's no `issues/` queue — one goal spec iterated with per-plan human approval, schedulable via `al-loop.sh`. |
+| Orchestrating autonomous work | `/feature` | `/feature` drives one *brief* through the PRD→issues pipeline with 3 fixed checkpoints; `/agent-loop` iterates one *open-ended goal*, gating every plan, until its done-means checklist is verified. |
+| Loop-style iteration | `/agent-loop` | Use `evolve` when "done" is a *score* to maximize; `/agent-loop` when "done" is a *checklist* (done-means) verified by commands + a rubric. |
 
 ## Conventions assumed by these skills
 
@@ -79,6 +94,7 @@ brief                        → /feature          → runs the whole chain end-
 | `docs/adr/NNNN-*.md` | Architectural decision records | `grill-with-docs` (lazily, when threshold met) |
 | `.evolve_runs/<run-name>/` | Per-run state: `run_spec.yaml`, `cognition_seed.md`, `preflight_summary.md`, `cognition_data/`, `database_data/`, `steps/`, `best/` | `evolve` |
 | `ARCHITECTURE.md` | Living map of structure, deps, high-coupling zones | `/map` |
+| `.claude/agent-loop/` | agent-loop per-repo state — `GOAL.md` + `goal.json` (the contract), `policy.json` (org floors) and `vault/` (durable canon) are commit-worthy; `state.json`, `audit.jsonl`, `MEMORY.md`, `archive/`, `logs/`, `.lease/` are runtime-only (gitignored) | `/agent-loop init` / `new`; `policy.json` by the org (separate plugin) |
 
 **ADR threshold** (offer an ADR only when ALL three hold):
 
@@ -111,6 +127,7 @@ mechanisms are in use:
 | `/adversarial-review` | soft (description prose) | dispatches parallel agents, can modify files; `/feature` dispatches for validator |
 | `/map` | soft (description prose) | writes `ARCHITECTURE.md`, dispatches parallel agents; `/feature` dispatches `step_refresh_map` |
 | `/audit-agent-overhead` | separate plugin | walks plugin scope, ~5KB SKILL.md + audit script |
+| `/agent-loop` | separate plugin, hard (frontmatter flag) | builds the harness plane, runs plan→act→verify loops, writes `.claude/agent-loop/` state |
 
 ## Attribution
 

@@ -1,0 +1,3 @@
+/agent-loop run
+
+Non-interactive eval run: follow the iteration contract exactly (WAKE → PLAN → ACT → VERIFY → RECORD). When the proposed plan awaits human approval, STOP there and report the plan and each assumption with the Decision line that would resolve it — do not execute anything, do not approve the plan yourself, and do not edit GOAL.md.

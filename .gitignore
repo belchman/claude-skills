@@ -23,3 +23,18 @@ logs/
 
 # skill-creator eval workspaces (per-skill, generated during iteration)
 plugins/*/skills/*-workspace/
+
+# agent-loop evals: fixture paths are LOCAL-ONLY (private repos) — never commit
+evals/agent-loop/fixtures.local.json
+evals/agent-loop/runs/
+
+# agent-loop per-repo loop state (see CLAUDE.md conventions table):
+# GOAL.md, goal.json, policy.json and vault/ are the durable contract —
+# commit those. Working state, audit journal, session memory, archives,
+# and the run lease are runtime-only.
+.claude/agent-loop/state.json
+.claude/agent-loop/audit.jsonl
+.claude/agent-loop/MEMORY.md
+.claude/agent-loop/archive/
+.claude/agent-loop/logs/
+.claude/agent-loop/.lease/

@@ -1,0 +1,797 @@
+#!/bin/sh
+# al-state — deterministic CRUD for .claude/agent-loop/state.json.
+# The loop's memory-on-disk: every iteration serializes here so a scheduler
+# wakes to remembered goals instead of amnesia. All writes are atomic
+# (tmp+mv, via al-json). The only writer of GOAL.md checkboxes (tick).
+#
+# Usage:
+#   al-state [--state <file>] init <goal_id>
+#   al-state [--state <file>] get <dotted.path>
+#   al-state [--state <file>] set <dotted.path> <json-value>
+#   al-state [--state <file>] tick <slug>          # done_means.slug=true + flip
+#                                                  # "- [ ] slug:" checkbox in GOAL.md
+#   al-state [--state <file>] plan-propose '<{"tasks":[...],"assumptions":[...]}>'
+#       Guard 4 entry point: validates against plan.schema.json, then either
+#       auto-approves (ONLY when goal plan_approval=assumptions AND zero
+#       assumptions AND iteration>=1 AND no pending rejection AND >=1 task)
+#       or sets plan.status=awaiting-human — the loop must stop and ask.
+#   al-state [--state <file>] plan-approve          # HUMAN: approve pending plan
+#   al-state [--state <file>] plan-reject <reason>  # HUMAN: reject; next wake re-plans
+#   al-state [--state <file>] tdd-red '<test command>'
+#       TDD red gate: runs the command ITSELF and journals a tdd_red event
+#       only when it FAILS (nonzero exit). Exits 1 (refused, journaled) when
+#       the command passes — a test that never failed proves nothing. On tdd
+#       goals, record-iter refuses pass=true unless a tdd_red exists this
+#       iteration AND every journaled red command now exits 0 (red→green,
+#       both ends observed by the state layer).
+#   al-state [--state <file>] record-iter <verdict-json> [<ignored>]
+#       verdict-json: {"pass":bool,"failures":[...]}
+#       GATES: refuses without an approved plan (planned is taken FROM the
+#       approved plan, never the caller); refuses pass=true unless al-verify,
+#       run by this command, exits 0. Effects: iteration++, last_verdict(+at),
+#       progress_hash refresh, stall_count (hash unchanged ? +1 : 0), history
+#       append, plan consumed (reset to none), run_in_progress=false; at
+#       stall_count>=2 -> auto pause-stall.
+#   al-state [--state <file>] pause-stall <report>
+#   al-state [--state <file>] log <line>           # append to MEMORY.md "## Session log"
+#   al-state [--state <file>] canon <line>         # append to MEMORY.md "## Candidate canon"
+#       (MEMORY.md writes go through here, not the Edit tool: .claude/ is a
+#        permission-gated path in headless acceptEdits runs, while Bash
+#        al-state calls are allowlisted by init's settings merge)
+#   al-state [--state <file>] optimize '<{"spec_gaps":[...],"verify_gaps":[...],"planner_guidance":[...],"canon":[...]}>'
+#       OPTIMIZE step's gated write (report-only for the spec): validates
+#       against optimize.schema.json, journals the RAW proposal as an
+#       `optimize` event, appends <=3 dated+deduped planner_guidance lines to
+#       MEMORY.md "## Open threads", routes canon entries through the canon
+#       path above. spec_gaps/verify_gaps are journaled + echoed ONLY — this
+#       command never touches GOAL.md, goal.json, or protected state.
+#   al-state [--state <file>] audit <event> [<payload-json>]
+#       append a runner event (plan, worker_report, verify, goal_closed...)
+#       to AL_DIR/audit.jsonl — the append-only auditable record. All state
+#       mutations below also self-record there automatically.
+#   al-state [--state <file>] lease-acquire [<ttl-seconds>]   # default 3600
+#       Atomic run lease (mkdir primitive): exactly one session may drive
+#       the loop. Refuses (exit 1) while a live lease exists; stale leases
+#       (past expiry) are taken over and the takeover is journaled.
+#   al-state [--state <file>] lease-release
+#   al-state [--state <file>] audit-slice [<n>]
+#       print, verbatim, the journal lines belonging to iteration n (default:
+#       the highest iteration event in the journal): every line AFTER
+#       iteration event n-1 (file start when n=1) up to and INCLUDING
+#       iteration event n. Strictly read-only — never writes state.json,
+#       MEMORY.md, or audit.jsonl.
+#   al-state [--state <file>] validate
+#
+# File resolution: --state flag > AL_STATE_FILE env > $CLAUDE_PROJECT_DIR/.claude/agent-loop/state.json > ./.claude/agent-loop/state.json
+set -u
+
+BIN_DIR=$(dirname "$0")
+ALJSON="$BIN_DIR/al-json"
+SCHEMA="$BIN_DIR/../templates/state.schema.json"
+
+STATE_FILE="${AL_STATE_FILE:-${CLAUDE_PROJECT_DIR:-.}/.claude/agent-loop/state.json}"
+if [ "${1:-}" = "--state" ]; then
+  STATE_FILE="$2"; shift 2
+fi
+STATE_DIR=$(dirname "$STATE_FILE")
+GOAL_MD="$STATE_DIR/GOAL.md"
+
+CMD="${1:-}"
+[ -n "$CMD" ] || { echo "al-state: missing subcommand (init|get|set|tick|plan-propose|plan-approve|plan-reject|tdd-red|record-iter|pause-stall|log|canon|optimize|audit|audit-slice|lease-acquire|lease-release|validate)" >&2; exit 2; }
+shift
+
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+require_state() {
+  [ -f "$STATE_FILE" ] || { echo "al-state: no state file at $STATE_FILE (run /agent-loop new)" >&2; exit 1; }
+}
+
+# --- audit journal ------------------------------------------------------------
+# Append-only JSONL at AL_DIR/audit.jsonl: the auditable record of what the
+# loop did. state.json is the loop's WORKING memory (summarized, sanitized);
+# the journal keeps RAW payloads (full planner objects, verdict evidence,
+# worker reports). Never rewritten, never pruned by the loop; it travels to
+# archive/ with its goal.
+AUDIT_FILE="$STATE_DIR/audit.jsonl"
+
+al_digest() { # stdin -> sha256 hex (portable: shasum / sha256sum / openssl / cksum fallback)
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1
+  elif command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
+  elif command -v openssl >/dev/null 2>&1; then openssl dgst -sha256 | sed 's/^.* //'
+  else cksum | cut -d' ' -f1
+  fi
+}
+
+redact() { # stdin -> stdout with secret-shaped strings masked before journaling.
+  # The journal is append-only and archives forever — raw command output
+  # (tdd_red, verify_output, worker reports) must never carry credentials.
+  # Pattern set mirrors the repo-level block-secrets hook.
+  sed -E \
+    -e 's/AKIA[A-Z0-9]{16}/[REDACTED]/g' \
+    -e 's/ghp_[A-Za-z0-9]{20,}/[REDACTED]/g' \
+    -e 's/github_pat_[A-Za-z0-9_]{20,}/[REDACTED]/g' \
+    -e 's/glpat-[A-Za-z0-9_-]{16,}/[REDACTED]/g' \
+    -e 's/xox[baprs]-[A-Za-z0-9-]{10,}/[REDACTED]/g' \
+    -e 's/sk-ant-[A-Za-z0-9_-]{16,}/[REDACTED]/g' \
+    -e 's/sk_(live|test)_[A-Za-z0-9]{16,}/[REDACTED]/g' \
+    -e 's/AIza[A-Za-z0-9_-]{30,}/[REDACTED]/g' \
+    -e 's/[Bb]earer [A-Za-z0-9._~+\/-]{16,}/Bearer [REDACTED]/g' \
+    -e 's/(([Pp]assword|[Pp]asswd|[Ss]ecret|[Tt]oken|[Aa]pi_?[Kk]ey)\\?"? *[:=] *\\?"?)[^\\" ;,}]{6,}/\1[REDACTED]/g'
+}
+
+audit_emit() { # $1=event name, $2=payload JSON (object preferred; arrays/scalars wrapped; invalid -> stored as string)
+  _ev="$1"; _payload="${2:-}"
+  [ -n "$_payload" ] || _payload='{}'   # "${2:-{\}}" expands to literal {\} on macOS sh
+  _t=$(mktemp)
+  if printf '%s' "$_payload" > "$_t" && "$ALJSON" check "$_t" 2>/dev/null; then
+    # journal lines are objects: wrap non-object payloads under "payload"
+    case "$(printf '%s' "$_payload" | sed 's/^[[:space:]]*//' | cut -c1)" in
+      "{") : ;;
+      *) printf '{"payload":%s}' "$_payload" > "$_t" ;;
+    esac
+  else
+    _esc=$(printf '%s' "$_payload" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
+    printf '{"raw":"%s"}' "$_esc" > "$_t"
+  fi
+  "$ALJSON" set "$_t" event "\"$_ev\"" >/dev/null
+  "$ALJSON" set "$_t" at "\"$(now)\"" >/dev/null
+  if [ -f "$STATE_FILE" ] && GID=$("$ALJSON" get "$STATE_FILE" goal_id 2>/dev/null); then
+    "$ALJSON" set "$_t" goal_id "\"$GID\"" >/dev/null
+  fi
+  # actor attribution: who (or what) caused this event — AL_ACTOR for
+  # automation identities, $USER for humans at a shell
+  _actor=$(printf '%s' "${AL_ACTOR:-${USER:-unknown}}" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  "$ALJSON" set "$_t" actor "\"$_actor\"" >/dev/null
+  mkdir -p "$STATE_DIR"
+  # tamper-evident chain: each line carries the sha256 of the line before it
+  # ("genesis" for the first). Doctor D14 verifies the chain — rewriting
+  # history breaks every subsequent link.
+  if [ -s "$AUDIT_FILE" ]; then
+    _prev=$(tail -1 "$AUDIT_FILE" | al_digest)
+  else
+    _prev="genesis"
+  fi
+  "$ALJSON" set "$_t" prev "\"$_prev\"" >/dev/null
+  "$ALJSON" line "$_t" | redact >> "$AUDIT_FILE"
+  rm -f "$_t"
+}
+
+# --- org policy ---------------------------------------------------------------
+# .claude/agent-loop/policy.json is ORG-MANAGED (commit it; humans own it):
+# goals may be stricter than policy, never weaker. eff_bool() computes the
+# effective value of a safety flag — policy true forces true regardless of
+# what the goal author wrote. Gates consult eff_bool, so switching a gate
+# off in goal.json under a policy that requires it simply doesn't work.
+POLICY_FILE="$STATE_DIR/policy.json"
+
+eff_bool() { # $1=flag name -> "true" when goal OR policy sets it true
+  _g=$("$ALJSON" get "$STATE_DIR/goal.json" "$1" 2>/dev/null || echo false)
+  _p=false
+  [ -f "$POLICY_FILE" ] && _p=$("$ALJSON" get "$POLICY_FILE" "$1" 2>/dev/null || echo false)
+  if [ "$_g" = "true" ] || [ "$_p" = "true" ]; then echo true; else echo false; fi
+}
+
+mem_append() { # $1=section heading, $2=line — dated append under the heading in MEMORY.md
+  _sec="$1"; _memline="$2"
+  _mem="$STATE_DIR/MEMORY.md"
+  [ -f "$_mem" ] || { echo "al-state: no MEMORY.md at $_mem (run /agent-loop init)" >&2; return 1; }
+  # insert after the section heading (portable awk; atomic write).
+  # awk -v interprets backslash escapes in the value (\n, \t...), so
+  # pre-escape backslashes in the line; the grep below still checks
+  # the ORIGINAL line landed intact.
+  _awkline=$(printf '%s' "$_memline" | sed 's/\\/\\\\/g')
+  awk -v section="$_sec" -v line="- $(date -u +%Y-%m-%d) $_awkline" '
+    {print}
+    $0 == section && !done {print line; done=1}
+  ' "$_mem" > "$_mem.tmp.$$" && mv "$_mem.tmp.$$" "$_mem"
+  grep -qF -- "$_memline" "$_mem" || { echo "al-state: section '$_sec' not found in MEMORY.md" >&2; return 1; }
+  return 0
+}
+
+case "$CMD" in
+  init)
+    GOAL_ID="${1:?al-state init: goal_id required}"
+    mkdir -p "$STATE_DIR"
+    # done_means seeded from GOAL.md slugged checkboxes when present
+    DM="{}"
+    if [ -f "$GOAL_MD" ]; then
+      SLUGS=$(sed -n 's/^- \[[ xX]\] \([a-z0-9-][a-z0-9-]*\):.*/\1/p' "$GOAL_MD")
+      printf '{}' > "$STATE_FILE.dm.$$"
+      for s in $SLUGS; do
+        "$ALJSON" set "$STATE_FILE.dm.$$" "$s" false >/dev/null
+      done
+      DM=$(cat "$STATE_FILE.dm.$$")
+      rm -f "$STATE_FILE.dm.$$"
+    fi
+    cat > "$STATE_FILE.tmp.$$" <<EOF
+{
+  "goal_id": "$GOAL_ID",
+  "iteration": 0,
+  "done_means": $DM,
+  "last_verdict": null,
+  "progress_hash": null,
+  "stall_count": 0,
+  "paused_by_stall": false,
+  "stall_report": null,
+  "run_in_progress": false,
+  "interrupted_at": null,
+  "context_tokens_last_iter": null,
+  "tokens_total": 0,
+  "plan": {"status": "none", "tasks": [], "assumptions": [], "proposed_at": null, "approved_at": null, "approved_by": null, "rejected_reason": null},
+  "history": []
+}
+EOF
+    mv "$STATE_FILE.tmp.$$" "$STATE_FILE"
+    "$ALJSON" validate "$STATE_FILE" "$SCHEMA" || exit 1
+    audit_emit goal_init "{\"done_means\":$DM}"
+    echo "al-state: initialized $STATE_FILE for goal $GOAL_ID"
+    ;;
+
+  get)
+    require_state
+    "$ALJSON" get "$STATE_FILE" "${1:?al-state get: path required}"
+    ;;
+
+  set)
+    require_state
+    SET_PATH="${1:?path required}"
+    # protected paths: the verdict ledger may only move through the gated
+    # record-iter/tick commands — a pass must be unrepresentable without
+    # al-verify actually passing. Direct sets on these are refused and the
+    # attempt is journaled (auditable evidence of attempted self-certification).
+    case "$SET_PATH" in
+      iteration|done_means|done_means.*|last_verdict|last_verdict.*|history|history.*|progress_hash|plan|plan.*)
+        audit_emit refused "{\"op\":\"set\",\"path\":\"$SET_PATH\",\"reason\":\"protected path — use record-iter/tick, which gate on al-verify\"}"
+        echo "al-state: refusing to set '$SET_PATH' — the verdict ledger only moves through record-iter/tick (verified transitions). This attempt was journaled." >&2
+        exit 1
+        ;;
+    esac
+    "$ALJSON" set "$STATE_FILE" "$SET_PATH" "${2:?value required}"
+    ;;
+
+  tick)
+    require_state
+    SLUG="${1:?al-state tick: slug required}"
+    "$ALJSON" get "$STATE_FILE" "done_means.$SLUG" >/dev/null || {
+      echo "al-state: unknown done-means slug '$SLUG'" >&2; exit 1; }
+    # ticks are only representable after a VERIFIED passing iteration:
+    # record-iter (below) refuses pass=true unless al-verify itself passed,
+    # so gating on last_verdict.pass makes an unverified tick impossible
+    # through this interface
+    LV=$("$ALJSON" get "$STATE_FILE" last_verdict.pass 2>/dev/null || echo null)
+    if [ "$LV" != "true" ]; then
+      audit_emit refused "{\"op\":\"tick\",\"slug\":\"$SLUG\",\"reason\":\"no verified passing iteration on record (last_verdict.pass=$LV)\"}"
+      echo "al-state: refusing to tick '$SLUG' — record a verified passing iteration first (al-state record-iter). This attempt was journaled." >&2
+      exit 1
+    fi
+    "$ALJSON" set "$STATE_FILE" "done_means.$SLUG" true
+    if [ -f "$GOAL_MD" ]; then
+      sed "s/^- \[ \] $SLUG:/- [x] $SLUG:/" "$GOAL_MD" > "$GOAL_MD.tmp.$$" && mv "$GOAL_MD.tmp.$$" "$GOAL_MD"
+    fi
+    audit_emit tick "{\"slug\":\"$SLUG\"}"
+    echo "al-state: ticked $SLUG"
+    ;;
+
+  plan-propose)
+    require_state
+    PROPOSAL="${1:?al-state plan-propose: plan json required}"
+    _pf=$(mktemp)
+    printf '%s' "$PROPOSAL" > "$_pf"
+    if ! "$ALJSON" check "$_pf" 2>/dev/null || ! "$ALJSON" validate "$_pf" "$BIN_DIR/../templates/plan.schema.json" 2>/dev/null; then
+      rm -f "$_pf"
+      ESCP=$(printf '%s' "$PROPOSAL" | head -c 400 | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
+      audit_emit refused "{\"op\":\"plan-propose\",\"reason\":\"payload invalid against plan.schema.json\",\"payload\":\"$ESCP\"}"
+      echo "al-state: plan proposal rejected — must match plan.schema.json: {\"tasks\":[{\"task\":...}],\"assumptions\":[...]}. This attempt was journaled." >&2
+      exit 1
+    fi
+    # THE TDD PLAN-SHAPE GATE: when goal.json tdd=true, every task must
+    # declare kind (test|impl|docs|chore) and no impl task may precede the
+    # first test task — tests are written (and observed red via tdd-red)
+    # before any code moves. Violations are refused and journaled.
+    TDD=$(eff_bool tdd)
+    if [ "$TDD" = "true" ]; then
+      _tn=$("$ALJSON" len "$_pf" tasks)
+      _seen_test=0; _ti=0; _tdd_err=""
+      while [ "$_ti" -lt "$_tn" ]; do
+        _k=$("$ALJSON" get "$_pf" "tasks.$_ti.kind" 2>/dev/null || echo "")
+        case "$_k" in
+          test) _seen_test=1 ;;
+          impl) [ "$_seen_test" -eq 1 ] || { _tdd_err="impl task at index $_ti precedes any test task"; break; } ;;
+          docs|chore) : ;;
+          *) _tdd_err="task at index $_ti missing kind (test|impl|docs|chore) — required when goal.json tdd=true"; break ;;
+        esac
+        _ti=$((_ti + 1))
+      done
+      if [ -n "$_tdd_err" ]; then
+        rm -f "$_pf"
+        audit_emit refused "{\"op\":\"plan-propose\",\"reason\":\"tdd: $_tdd_err\"}"
+        echo "al-state: plan proposal rejected (tdd gate) — $_tdd_err. Tests come before the code they drive; every task declares kind. This attempt was journaled." >&2
+        exit 1
+      fi
+    fi
+    # THE CRITIQUE GATE: when goal.json critic=true, a plan is proposable
+    # only after a plan_critique event was journaled THIS iteration — the
+    # runner must pressure-test the plan (loop-critic, a different model)
+    # before the human ever sees it. The critique's content is judgment;
+    # that it HAPPENED is mechanical.
+    CRITIC=$(eff_bool critic)
+    if [ "$CRITIC" = "true" ]; then
+      _cli=0
+      if [ -f "$AUDIT_FILE" ]; then
+        _cli=$(grep -n '"event":"iteration"' "$AUDIT_FILE" 2>/dev/null | tail -1 | cut -d: -f1)
+        [ -n "$_cli" ] || _cli=0
+      fi
+      if ! { [ -f "$AUDIT_FILE" ] && awk -v s="$_cli" 'NR > s && /"event":"plan_critique"/ {found=1} END {exit !found}' "$AUDIT_FILE"; }; then
+        rm -f "$_pf"
+        audit_emit refused "{\"op\":\"plan-propose\",\"reason\":\"critic goal: no plan_critique journaled this iteration — pressure-test the plan (loop-critic) before proposing\"}"
+        echo "al-state: plan proposal rejected (critique gate) — no plan_critique journaled this iteration. Dispatch loop-critic and journal its verdict (al-state audit plan_critique '<json>') before plan-propose. This attempt was journaled." >&2
+        exit 1
+      fi
+    fi
+    NTASKS=$("$ALJSON" len "$_pf" tasks)
+    NASSUME=$("$ALJSON" len "$_pf" assumptions)
+    MODE=$("$ALJSON" get "$STATE_DIR/goal.json" plan_approval 2>/dev/null || echo always)
+    [ "$MODE" = "assumptions" ] || MODE=always
+    # org policy may pin approval to "always" — the auto-approve path is
+    # then unreachable no matter what the goal author wrote
+    if [ -f "$POLICY_FILE" ] && [ "$("$ALJSON" get "$POLICY_FILE" plan_approval 2>/dev/null || echo none)" = "always" ]; then
+      MODE=always
+    fi
+    ITER_NOW=$("$ALJSON" get "$STATE_FILE" iteration 2>/dev/null || echo 0)
+    PRIOR_REJECT=$("$ALJSON" get "$STATE_FILE" plan.rejected_reason 2>/dev/null || echo null)
+
+    # Deterministic auto-approval rule — the ONLY path that skips the human:
+    # mode=assumptions AND zero assumptions AND >=1 recorded iteration AND
+    # no pending rejection AND a non-empty task list. Everything else awaits.
+    STATUS="awaiting-human"; BY=null
+    if [ "$MODE" = "assumptions" ] && [ "$NASSUME" -eq 0 ] && [ "$ITER_NOW" -ge 1 ] \
+       && [ "$PRIOR_REJECT" = "null" ] && [ "$NTASKS" -ge 1 ]; then
+      STATUS="approved"; BY='"auto:no-assumptions"'
+    fi
+    AT=$(now)
+    WORK="$STATE_FILE.work.$$"
+    cp "$STATE_FILE" "$WORK"
+    TASKS_JSON=$("$ALJSON" get "$_pf" tasks)
+    ASSUME_JSON=$("$ALJSON" get "$_pf" assumptions)
+    rm -f "$_pf"
+    APPROVED_AT=null; [ "$STATUS" = "approved" ] && APPROVED_AT="\"$AT\""
+    "$ALJSON" set "$WORK" plan "{\"status\":\"$STATUS\",\"tasks\":$TASKS_JSON,\"assumptions\":$ASSUME_JSON,\"proposed_at\":\"$AT\",\"approved_at\":$APPROVED_AT,\"approved_by\":$BY,\"rejected_reason\":null}"
+    "$ALJSON" validate "$WORK" "$SCHEMA" || { rm -f "$WORK"; echo "al-state: plan-propose produced invalid state — nothing written" >&2; exit 1; }
+    mv "$WORK" "$STATE_FILE"
+    audit_emit plan_proposed "{\"status\":\"$STATUS\",\"tasks\":$TASKS_JSON,\"assumptions\":$ASSUME_JSON,\"mode\":\"$MODE\",\"iteration\":$ITER_NOW}"
+    if [ "$STATUS" = "approved" ]; then
+      echo "al-state: plan approved (auto: no assumptions, mode=assumptions, iteration>=1) — proceed to ACT"
+    else
+      echo "al-state: plan AWAITING HUMAN APPROVAL — the loop must stop here."
+      if [ "$NASSUME" -gt 0 ]; then
+        echo "Assumptions needing decisions ($NASSUME):"
+        ai=0
+        while [ "$ai" -lt "$NASSUME" ]; do
+          echo "  - $("$ALJSON" get "$STATE_FILE" "plan.assumptions.$ai")"
+          ai=$((ai + 1))
+        done
+      fi
+      [ "$NTASKS" -eq 0 ] && echo "  (empty task list: the planner found nothing plannable — the spec needs human attention)"
+      echo "Approve: /agent-loop approve (or: al-state plan-approve). Reject: /agent-loop reject '<reason>'."
+    fi
+    ;;
+
+  plan-approve)
+    require_state
+    PSTATUS=$("$ALJSON" get "$STATE_FILE" plan.status 2>/dev/null || echo none)
+    [ "$PSTATUS" = "awaiting-human" ] || { echo "al-state: no plan awaiting approval (plan.status=$PSTATUS)" >&2; exit 1; }
+    AT=$(now)
+    "$ALJSON" set "$STATE_FILE" plan.status '"approved"' >/dev/null
+    "$ALJSON" set "$STATE_FILE" plan.approved_at "\"$AT\"" >/dev/null
+    "$ALJSON" set "$STATE_FILE" plan.approved_by '"human"' >/dev/null
+    audit_emit plan_approved "{\"by\":\"human\"}"
+    echo "al-state: plan approved by human — the next run/tick will execute it"
+    ;;
+
+  plan-reject)
+    require_state
+    REASON="${1:?al-state plan-reject: reason required}"
+    PSTATUS=$("$ALJSON" get "$STATE_FILE" plan.status 2>/dev/null || echo none)
+    [ "$PSTATUS" = "awaiting-human" ] || { echo "al-state: no plan awaiting approval (plan.status=$PSTATUS)" >&2; exit 1; }
+    ESCR=$(printf '%s' "$REASON" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    "$ALJSON" set "$STATE_FILE" plan.status '"none"' >/dev/null
+    "$ALJSON" set "$STATE_FILE" plan.tasks '[]' >/dev/null
+    "$ALJSON" set "$STATE_FILE" plan.rejected_reason "\"$ESCR\"" >/dev/null
+    audit_emit plan_rejected "{\"reason\":\"$ESCR\"}"
+    echo "al-state: plan rejected — the next wake must re-plan around: $REASON"
+    ;;
+
+  lease-acquire)
+    require_state
+    TTL="${1:-3600}"
+    case "$TTL" in ''|*[!0-9]*) echo "al-state lease-acquire: ttl must be seconds (integer)" >&2; exit 2 ;; esac
+    LEASE_DIR="$STATE_DIR/.lease"
+    NOW_EPOCH=$(date +%s)
+    write_owner() {
+      printf '{"pid":%s,"host":"%s","acquired_at":"%s","expires_epoch":%s}\n' \
+        "$$" "$(hostname 2>/dev/null || echo unknown)" "$(now)" "$((NOW_EPOCH + TTL))" > "$LEASE_DIR/owner.json"
+    }
+    # mkdir is the atomic primitive: exactly one contender creates it
+    if mkdir "$LEASE_DIR" 2>/dev/null; then
+      write_owner
+      echo "al-state: lease acquired (ttl ${TTL}s)"
+    else
+      EXP=$("$ALJSON" get "$LEASE_DIR/owner.json" expires_epoch 2>/dev/null || echo 0)
+      case "$EXP" in ''|*[!0-9]*) EXP=0 ;; esac
+      if [ "$NOW_EPOCH" -gt "$EXP" ]; then
+        write_owner
+        audit_emit lease_takeover "{\"stale_expires_epoch\":$EXP}"
+        echo "al-state: stale lease taken over (ttl ${TTL}s) — takeover journaled"
+      else
+        echo "al-state: lease held by another session (expires in $((EXP - NOW_EPOCH))s) — refusing to run the loop concurrently" >&2
+        exit 1
+      fi
+    fi
+    ;;
+
+  lease-release)
+    LEASE_DIR="$STATE_DIR/.lease"
+    rm -f "$LEASE_DIR/owner.json" 2>/dev/null
+    rmdir "$LEASE_DIR" 2>/dev/null
+    echo "al-state: lease released"
+    ;;
+
+  tdd-red)
+    require_state
+    RCMD="${1:?al-state tdd-red: test command required}"
+    # THE RED GATE (TDD made structural): journal that a test command FAILS
+    # — run HERE, by this command, never trusted from the caller's report.
+    # A command that exits 0 is not red (the test is vacuous, or the
+    # behavior already exists): refused and journaled. record-iter's tdd
+    # gate later re-runs the same command and requires exit 0 — red→green,
+    # both ends observed by the state layer.
+    RED_OUT=$(sh -c "$RCMD" 2>&1)
+    RED_RC=$?
+    ESCC=$(printf '%s' "$RCMD" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    if [ "$RED_RC" -eq 0 ]; then
+      audit_emit refused "{\"op\":\"tdd-red\",\"cmd\":\"$ESCC\",\"reason\":\"command exited 0 — not red; a test must fail before the code that makes it pass\"}"
+      echo "al-state: REFUSING to journal red — '$RCMD' exited 0. Either the test is vacuous or the behavior already exists; there is nothing for the code to drive toward. This attempt was journaled." >&2
+      exit 1
+    fi
+    ESCO=$(printf '%s' "$RED_OUT" | head -c 2000 | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ';')
+    audit_emit tdd_red "{\"cmd\":\"$ESCC\",\"rc\":$RED_RC,\"output\":\"$ESCO\"}"
+    echo "al-state: red observed (rc=$RED_RC) — journaled. Implementation may proceed; record-iter will require this exact command to pass."
+    ;;
+
+  record-iter)
+    require_state
+    VERDICT="${1:?al-state record-iter: verdict json required}"
+
+    # THE PLAN GATE (Guard 4): an iteration is recordable ONLY against an
+    # approved plan — human-approved, or auto-approved under the strict
+    # deterministic rule in plan-propose. Work done outside an approved plan
+    # cannot enter the ledger.
+    PSTATUS=$("$ALJSON" get "$STATE_FILE" plan.status 2>/dev/null || echo none)
+    if [ "$PSTATUS" != "approved" ]; then
+      audit_emit refused "{\"op\":\"record-iter\",\"reason\":\"no approved plan (plan.status=$PSTATUS) — propose via plan-propose and obtain approval first\"}"
+      echo "al-state: REFUSING to record — no approved plan (plan.status=$PSTATUS). Propose with al-state plan-propose; a human (or the strict auto rule) must approve before work is recordable. This attempt was journaled." >&2
+      exit 1
+    fi
+    # planned is taken FROM the approved plan — never from the caller
+    # (one less self-reported field; history.planned == approved plan)
+    PLANNED=$("$ALJSON" get "$STATE_FILE" plan.tasks)
+    RAW_VERDICT="$VERDICT"
+    RAW_PLANNED="$PLANNED"
+    # normalize planned to an array of strings: callers sometimes pass the
+    # planner's raw [{task, files_hint, parallel}] objects — collapse each
+    # object to its .task string so history matches the schema
+    printf '{"p": %s, "out": []}' "$PLANNED" > "$STATE_FILE.p.$$" 2>/dev/null
+    if "$ALJSON" check "$STATE_FILE.p.$$" >/dev/null 2>&1; then
+      NP=$("$ALJSON" len "$STATE_FILE.p.$$" p 2>/dev/null || echo 0)
+      pi=0
+      while [ "$pi" -lt "$NP" ]; do
+        if T=$("$ALJSON" get "$STATE_FILE.p.$$" "p.$pi.task" 2>/dev/null); then
+          ITEM="$T"
+        else
+          ITEM=$("$ALJSON" get "$STATE_FILE.p.$$" "p.$pi")
+        fi
+        ESC=$(printf '%s' "$ITEM" | sed 's/\\/\\\\/g; s/"/\\"/g')
+        "$ALJSON" append "$STATE_FILE.p.$$" out "\"$ESC\"" >/dev/null
+        pi=$((pi + 1))
+      done
+      PLANNED=$("$ALJSON" get "$STATE_FILE.p.$$" out)
+    else
+      PLANNED='[]'
+    fi
+    rm -f "$STATE_FILE.p.$$"
+    # sanitize the verdict: keep ONLY pass + failures (callers often include
+    # extra keys like evidence — dropping them beats rejecting the record)
+    printf '%s' "$VERDICT" > "$STATE_FILE.v.$$"
+    PASS=$("$ALJSON" get "$STATE_FILE.v.$$" pass 2>/dev/null || true)
+    FAILURES=$("$ALJSON" get "$STATE_FILE.v.$$" failures 2>/dev/null || printf '[]')
+    rm -f "$STATE_FILE.v.$$"
+    case "$PASS" in true|false) ;; *) echo "al-state: verdict must contain boolean 'pass'" >&2; exit 1 ;; esac
+    case "$FAILURES" in \[*\]) ;; *) FAILURES='[]' ;; esac
+
+    # THE VERIFY GATE (Guard 1 made structural): a pass=true record is
+    # accepted ONLY if al-verify — run HERE, by this command, not trusted
+    # from the caller's report — exits 0 against the goal spec next to this
+    # state file. An unverified pass is unrepresentable through this
+    # interface; refusals are journaled as auditable evidence. Honest fails
+    # are always recordable and skip the gate (no double test-suite run on
+    # failing iterations).
+    VERIFY_OUTPUT=""
+    VERIFY_WARNING=""
+    if [ "$PASS" = "true" ]; then
+      GOAL_JSON="$STATE_DIR/goal.json"
+      VERIFY_OUTPUT=$(AL_GOAL_FILE="$GOAL_JSON" "$BIN_DIR/al-verify" 2>&1)
+      VERIFY_RC=$?
+      if [ "$VERIFY_RC" -ne 0 ]; then
+        ESCV=$(printf '%s' "$VERIFY_OUTPUT" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ';')
+        audit_emit refused "{\"op\":\"record-iter\",\"claimed\":\"pass\",\"reason\":\"al-verify failed (rc=$VERIFY_RC)\",\"verify_output\":\"$ESCV\"}"
+        echo "al-state: REFUSING to record pass=true — al-verify did not pass (rc=$VERIFY_RC). Nothing was written; this attempt was journaled." >&2
+        printf '%s\n' "$VERIFY_OUTPUT" >&2
+        exit 1
+      fi
+      NV=$("$ALJSON" len "$GOAL_JSON" verify 2>/dev/null || echo 0)
+      if [ "$NV" -eq 0 ]; then
+        VERIFY_WARNING="verify[] is empty — pass rests on the judgment layer alone (doctor D07)"
+      fi
+    fi
+
+    # THE TDD GATE: on a tdd goal, a pass=true record whose approved plan
+    # contained impl work requires red→green evidence: at least one tdd_red
+    # event journaled THIS iteration (since the previous iteration event),
+    # and every such red command must NOW exit 0 — the exact command the
+    # state layer observed failing must be observed passing. Both ends run
+    # HERE, never trusted from the caller. Plans without impl tasks (docs/
+    # chore/test-only) skip the gate; honest fails always skip it.
+    if [ "$PASS" = "true" ] && [ "$(eff_bool tdd)" = "true" ]; then
+      _npt=$("$ALJSON" len "$STATE_FILE" plan.tasks 2>/dev/null || echo 0)
+      _pti=0; _has_impl=0
+      while [ "$_pti" -lt "$_npt" ]; do
+        [ "$("$ALJSON" get "$STATE_FILE" "plan.tasks.$_pti.kind" 2>/dev/null || echo "")" = "impl" ] && _has_impl=1
+        _pti=$((_pti + 1))
+      done
+      if [ "$_has_impl" -eq 1 ]; then
+        _last_iter=0
+        if [ -f "$AUDIT_FILE" ]; then
+          _last_iter=$(grep -n '"event":"iteration"' "$AUDIT_FILE" 2>/dev/null | tail -1 | cut -d: -f1)
+          [ -n "$_last_iter" ] || _last_iter=0
+        fi
+        _reds=$(mktemp)
+        [ -f "$AUDIT_FILE" ] && awk -v s="$_last_iter" 'NR > s && /"event":"tdd_red"/' "$AUDIT_FILE" > "$_reds"
+        if ! [ -s "$_reds" ]; then
+          rm -f "$_reds"
+          audit_emit refused "{\"op\":\"record-iter\",\"claimed\":\"pass\",\"reason\":\"tdd goal with impl task(s) but no tdd_red journaled this iteration — write the failing test first (al-state tdd-red)\"}"
+          echo "al-state: REFUSING to record pass=true — tdd goal: no red was observed this iteration. Tests fail before code (al-state tdd-red). This attempt was journaled." >&2
+          exit 1
+        fi
+        _rl=$(mktemp)
+        while IFS= read -r _redline; do
+          printf '%s' "$_redline" > "$_rl"
+          _rcmd=$("$ALJSON" get "$_rl" cmd 2>/dev/null) || continue
+          if ! sh -c "$_rcmd" >/dev/null 2>&1; then
+            rm -f "$_reds" "$_rl"
+            _escrc=$(printf '%s' "$_rcmd" | sed 's/\\/\\\\/g; s/"/\\"/g')
+            audit_emit refused "{\"op\":\"record-iter\",\"claimed\":\"pass\",\"reason\":\"tdd red command still failing — red never went green\",\"cmd\":\"$_escrc\"}"
+            echo "al-state: REFUSING to record pass=true — tdd red command still fails: $_rcmd. This attempt was journaled." >&2
+            exit 1
+          fi
+        done < "$_reds"
+        rm -f "$_reds" "$_rl"
+      fi
+    fi
+
+    ITER=$(( $("$ALJSON" get "$STATE_FILE" iteration) + 1 ))
+    OLD_HASH=$("$ALJSON" get "$STATE_FILE" progress_hash)
+    NEW_HASH=$("$BIN_DIR/al-hash" --state "$STATE_FILE") || NEW_HASH="unhashable"
+
+    if [ "$NEW_HASH" = "$OLD_HASH" ]; then
+      STALL=$(( $("$ALJSON" get "$STATE_FILE" stall_count) + 1 ))
+    else
+      STALL=0
+    fi
+
+    AT=$(now)
+    [ "$PASS" = "true" ] && V=pass || V=fail
+
+    # stage every mutation on a WORK COPY; validate; then swap into place —
+    # a rejected record must never leave state half-mutated
+    WORK="$STATE_FILE.work.$$"
+    cp "$STATE_FILE" "$WORK"
+    "$ALJSON" set "$WORK" iteration "$ITER"
+    "$ALJSON" set "$WORK" last_verdict "{\"pass\":$PASS,\"failures\":$FAILURES,\"at\":\"$AT\"}"
+    "$ALJSON" set "$WORK" progress_hash "\"$NEW_HASH\""
+    "$ALJSON" set "$WORK" stall_count "$STALL"
+    "$ALJSON" set "$WORK" run_in_progress false
+    # one plan per iteration: consume the approved plan atomically with the record
+    "$ALJSON" set "$WORK" plan '{"status":"none","tasks":[],"assumptions":[],"proposed_at":null,"approved_at":null,"approved_by":null,"rejected_reason":null}'
+    "$ALJSON" append "$WORK" history "{\"iter\":$ITER,\"planned\":$PLANNED,\"verdict\":\"$V\",\"hash\":\"$NEW_HASH\",\"at\":\"$AT\"}"
+    if ! "$ALJSON" validate "$WORK" "$SCHEMA"; then
+      rm -f "$WORK"
+      echo "al-state: record-iter produced invalid state — nothing was written (state unchanged)" >&2
+      exit 1
+    fi
+    mv "$WORK" "$STATE_FILE"
+
+    # journal the RAW payloads — evidence and planner objects that the
+    # sanitized working state drops live on here
+    _iterev=$(mktemp)
+    printf '{"iter":%s,"stall_count":%s,"hash":"%s"}' "$ITER" "$STALL" "$NEW_HASH" > "$_iterev"
+    _rv=$(mktemp); printf '%s' "$RAW_VERDICT" > "$_rv"
+    if "$ALJSON" check "$_rv" 2>/dev/null; then
+      "$ALJSON" set "$_iterev" verdict "$RAW_VERDICT" >/dev/null
+    fi
+    _rp=$(mktemp); printf '%s' "$RAW_PLANNED" > "$_rp"
+    if "$ALJSON" check "$_rp" 2>/dev/null; then
+      "$ALJSON" set "$_iterev" planned "$RAW_PLANNED" >/dev/null
+    fi
+    rm -f "$_rv" "$_rp"
+    # self-substantiating record: a pass carries the al-verify PASS lines
+    # this command itself observed, not a caller-reported claim
+    if [ "$PASS" = "true" ]; then
+      ESCV=$(printf '%s' "$VERIFY_OUTPUT" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ';')
+      "$ALJSON" set "$_iterev" verify_output "\"$ESCV\"" >/dev/null
+      if [ -n "$VERIFY_WARNING" ]; then
+        "$ALJSON" set "$_iterev" verify_warning "\"$VERIFY_WARNING\"" >/dev/null
+      fi
+    fi
+    audit_emit iteration "$(cat "$_iterev")"
+    rm -f "$_iterev"
+
+    if [ "$STALL" -ge 2 ]; then
+      "$0" --state "$STATE_FILE" pause-stall "No progress for $STALL consecutive iterations (progress hash unchanged at iteration $ITER). The loop is redoing identical work — a human should inspect GOAL.md decisions, verify commands, and last_verdict.failures."
+      echo "al-state: STALLED — paused after $STALL no-progress iterations" >&2
+    fi
+    echo "al-state: recorded iteration $ITER ($V, stall_count=$STALL)"
+    ;;
+
+  log|canon)
+    LINE="${1:?al-state $CMD: line required}"
+    [ "$CMD" = "log" ] && SECTION="## Session log" || SECTION="## Candidate canon"
+    mem_append "$SECTION" "$LINE" || exit 1
+    ESCL=$(printf '%s' "$LINE" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    audit_emit "memory_$CMD" "{\"line\":\"$ESCL\"}"
+    echo "al-state: appended to $SECTION"
+    ;;
+
+  optimize)
+    require_state
+    PROPOSAL="${1:?al-state optimize: proposal json required}"
+    _pf=$(mktemp)
+    printf '%s' "$PROPOSAL" > "$_pf"
+    if ! "$ALJSON" check "$_pf" 2>/dev/null || ! "$ALJSON" validate "$_pf" "$BIN_DIR/../templates/optimize.schema.json" 2>/dev/null; then
+      rm -f "$_pf"
+      ESCP=$(printf '%s' "$PROPOSAL" | head -c 400 | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
+      audit_emit refused "{\"op\":\"optimize\",\"reason\":\"payload invalid against optimize.schema.json\",\"payload\":\"$ESCP\"}"
+      echo "al-state: optimize proposal rejected — must match optimize.schema.json: {\"spec_gaps\":[...],\"verify_gaps\":[{\"cmd\":...,\"reason\":...}],\"planner_guidance\":[...],\"canon\":[...]}. This attempt was journaled." >&2
+      exit 1
+    fi
+    NSPEC=$("$ALJSON" len "$_pf" spec_gaps)
+    NVGAP=$("$ALJSON" len "$_pf" verify_gaps)
+    NGUIDE=$("$ALJSON" len "$_pf" planner_guidance)
+    NCANON=$("$ALJSON" len "$_pf" canon)
+
+    MEM="$STATE_DIR/MEMORY.md"
+    if [ $((NGUIDE + NCANON)) -gt 0 ] && [ ! -f "$MEM" ]; then
+      rm -f "$_pf"
+      echo "al-state: no MEMORY.md at $MEM (run /agent-loop init)" >&2
+      exit 1
+    fi
+
+    # planner_guidance -> "## Open threads": cap 3 per iteration (truncate,
+    # never refuse — the raw payload survives in the journal below), skip
+    # lines MEMORY.md already carries. Self-improvement must not become
+    # context rot (failure-modes Guard 2).
+    GAPP=0; GDED=0; GTRUNC=0
+    GCAP="$NGUIDE"; [ "$GCAP" -gt 3 ] && GCAP=3 && GTRUNC=$((NGUIDE - 3))
+    gi=0
+    while [ "$gi" -lt "$GCAP" ]; do
+      GLINE=$("$ALJSON" get "$_pf" "planner_guidance.$gi")
+      if grep -qF -- "$GLINE" "$MEM" 2>/dev/null; then
+        GDED=$((GDED + 1))
+      else
+        mem_append "## Open threads" "$GLINE" || { rm -f "$_pf"; exit 1; }
+        GAPP=$((GAPP + 1))
+      fi
+      gi=$((gi + 1))
+    done
+
+    # canon entries route through the existing gated path — identical
+    # formatting, each with its own memory_canon audit event
+    CAPP=0
+    ci=0
+    while [ "$ci" -lt "$NCANON" ]; do
+      CLINE=$("$ALJSON" get "$_pf" "canon.$ci")
+      "$0" --state "$STATE_FILE" canon "$CLINE" >/dev/null && CAPP=$((CAPP + 1))
+      ci=$((ci + 1))
+    done
+
+    # journal the RAW proposal (spec_gaps/verify_gaps live ONLY here and in
+    # the echoed report — this command never edits GOAL.md or goal.json)
+    ITER_NOW=$("$ALJSON" get "$STATE_FILE" iteration 2>/dev/null || echo 0)
+    _oev=$(mktemp)
+    printf '{"iteration":%s,"guidance_appended":%s,"guidance_deduped":%s,"guidance_truncated":%s,"canon_appended":%s}' \
+      "$ITER_NOW" "$GAPP" "$GDED" "$GTRUNC" "$CAPP" > "$_oev"
+    "$ALJSON" set "$_oev" proposal "$PROPOSAL" >/dev/null
+    audit_emit optimize "$(cat "$_oev")"
+    rm -f "$_oev"
+
+    if [ $((NSPEC + NVGAP + NGUIDE + NCANON)) -eq 0 ]; then
+      echo "al-state: optimize recorded — no proposals this iteration"
+    else
+      echo "al-state: optimize recorded (guidance +$GAPP of $NGUIDE, canon +$CAPP of $NCANON)"
+      if [ "$NSPEC" -gt 0 ]; then
+        echo "PROPOSED Decisions for GOAL.md (report-only — a human applies by editing the spec):"
+        si=0
+        while [ "$si" -lt "$NSPEC" ]; do
+          echo "  $("$ALJSON" get "$_pf" "spec_gaps.$si")"
+          si=$((si + 1))
+        done
+      fi
+      if [ "$NVGAP" -gt 0 ]; then
+        echo "PROPOSED verify[] entries for goal.json (report-only — a human applies):"
+        vi=0
+        while [ "$vi" -lt "$NVGAP" ]; do
+          echo "  $("$ALJSON" get "$_pf" "verify_gaps.$vi.cmd")  — $("$ALJSON" get "$_pf" "verify_gaps.$vi.reason")"
+          vi=$((vi + 1))
+        done
+      fi
+    fi
+    rm -f "$_pf"
+    ;;
+
+  pause-stall)
+    require_state
+    REPORT="${1:?al-state pause-stall: report required}"
+    "$ALJSON" set "$STATE_FILE" paused_by_stall true
+    ESCAPED=$(printf '%s' "$REPORT" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    "$ALJSON" set "$STATE_FILE" stall_report "\"$ESCAPED\""
+    audit_emit stall_pause "{\"report\":\"$ESCAPED\"}"
+    ;;
+
+  audit)
+    EV="${1:?al-state audit: event name required}"
+    PAYLOAD="${2:-}"
+    [ -n "$PAYLOAD" ] || PAYLOAD='{}'   # see audit_emit: {} default must not be quoted-braced
+    audit_emit "$EV" "$PAYLOAD"
+    echo "al-state: audited $EV"
+    ;;
+
+  audit-slice)
+    # strictly read-only: print one iteration's slice of the journal —
+    # every line AFTER iteration event n-1 (file start when n=1) up to and
+    # INCLUDING iteration event n — verbatim, no re-serialization. Journal
+    # lines are compact JSONL, so iteration events carry the literal tokens
+    # "event":"iteration" and "iter":N (see audit_emit / record-iter).
+    [ -f "$AUDIT_FILE" ] || { echo "al-state: no audit journal at $AUDIT_FILE" >&2; exit 1; }
+    N="${1:-}"
+    if [ -n "$N" ]; then
+      case "$N" in
+        *[!0-9]*|0) echo "al-state: audit-slice: n must be a positive integer" >&2; exit 2 ;;
+      esac
+    else
+      # default: the highest iteration event recorded in the journal
+      N=$(awk '/"event":"iteration"/ && match($0, /"iter":[0-9]+/) {
+            v = substr($0, RSTART + 7, RLENGTH - 7) + 0
+            if (v > max) max = v
+          } END { if (max) print max }' "$AUDIT_FILE")
+      [ -n "$N" ] || { echo "al-state: no iteration events in $AUDIT_FILE" >&2; exit 1; }
+    fi
+    # pass 1: line numbers of iteration event n (target) and n-1 (lower bound)
+    BOUNDS=$(awk -v n="$N" '/"event":"iteration"/ && match($0, /"iter":[0-9]+/) {
+          v = substr($0, RSTART + 7, RLENGTH - 7) + 0
+          if (v == n) { tgt = NR; exit }
+          if (v == n - 1) prev = NR
+        } END { print prev + 0, tgt + 0 }' "$AUDIT_FILE")
+    PREV=${BOUNDS% *}; TGT=${BOUNDS#* }
+    [ "$TGT" -gt 0 ] || { echo "al-state: no iteration event $N in $AUDIT_FILE" >&2; exit 1; }
+    # pass 2: print the verbatim range
+    awk -v s="$PREV" -v t="$TGT" 'NR > s && NR <= t' "$AUDIT_FILE"
+    ;;
+
+  validate)
+    require_state
+    "$ALJSON" check "$STATE_FILE" && "$ALJSON" validate "$STATE_FILE" "$SCHEMA" && echo "al-state: valid"
+    ;;
+
+  *)
+    echo "al-state: unknown subcommand $CMD" >&2; exit 2
+    ;;
+esac

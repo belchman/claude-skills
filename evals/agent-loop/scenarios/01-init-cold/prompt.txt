@@ -1,0 +1,3 @@
+/agent-loop init
+
+Non-interactive eval run: where the init procedure asks for confirmation, proceed with the detected/default values (confirm the settings diff, accept detection output as-is, skip optional offers). Do not invent verify commands that detection did not find.

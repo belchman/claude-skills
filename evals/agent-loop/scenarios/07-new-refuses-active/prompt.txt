@@ -1,0 +1,5 @@
+/agent-loop new "another goal"
+
+Non-interactive eval run: do not ask interview questions. If the subcommand
+must refuse (an active goal already exists), refuse plainly and explain what
+the user should do instead.

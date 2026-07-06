@@ -1,0 +1,125 @@
+#!/bin/sh
+# al-detect — stack probe for /agent-loop init. Evidence-based only: reports
+# commands a config file actually implies; anything unrecognized stays null
+# (init must never fabricate a verify command). Output: one JSON object.
+#
+# Detection has two passes. Pass 1 guesses from the language ecosystem
+# (package.json, pyproject, …). Pass 2 looks for the project's OWN curated
+# test entry point — a docker compose test stack or a Makefile `test:`
+# target — and lets it override the language guess: a dockerized project's
+# deps, services, and env live in the containers, so a host-side
+# `pytest`/`npm test` would be wrong there. Priority (low → high):
+# language guess < compose test service < test-variant compose file < make test.
+#
+# Usage: al-detect [<repo-dir>]     (default: $CLAUDE_PROJECT_DIR or cwd)
+set -u
+
+BIN_DIR=$(dirname "$0")
+ALJSON="$BIN_DIR/al-json"
+REPO="${1:-${CLAUDE_PROJECT_DIR:-.}}"
+
+OUT=$(mktemp)
+trap 'rm -f "$OUT"' EXIT
+printf '{"language":null,"test_cmd":null,"lint_cmd":null,"format_cmd":null,"compose_file":null,"compose_test_file":null,"evidence":[]}' > "$OUT"
+
+put() { "$ALJSON" set "$OUT" "$1" "$2" >/dev/null; }
+ev()  { "$ALJSON" append "$OUT" evidence "\"$1\"" >/dev/null; }
+
+# ---- Pass 1: language ecosystem ----
+
+if [ -f "$REPO/package.json" ]; then
+  put language '"javascript/typescript"'; ev "package.json"
+  PM=npm
+  [ -f "$REPO/pnpm-lock.yaml" ] && PM=pnpm && ev "pnpm-lock.yaml"
+  [ -f "$REPO/yarn.lock" ] && PM=yarn && ev "yarn.lock"
+  "$ALJSON" get "$REPO/package.json" scripts.test >/dev/null 2>&1 && put test_cmd "\"$PM test\""
+  "$ALJSON" get "$REPO/package.json" scripts.lint >/dev/null 2>&1 && put lint_cmd "\"$PM run lint\""
+  "$ALJSON" get "$REPO/package.json" scripts.format >/dev/null 2>&1 && put format_cmd "\"$PM run format\""
+  { [ -f "$REPO/.prettierrc" ] || [ -f "$REPO/.prettierrc.json" ] || [ -f "$REPO/prettier.config.js" ]; } \
+    && { put format_cmd '"npx prettier --write"'; ev "prettier config"; }
+elif [ -f "$REPO/pyproject.toml" ] || [ -f "$REPO/setup.py" ] || [ -f "$REPO/requirements.txt" ]; then
+  put language '"python"'
+  [ -f "$REPO/pyproject.toml" ] && ev "pyproject.toml"
+  [ -f "$REPO/setup.py" ] && ev "setup.py"
+  [ -f "$REPO/requirements.txt" ] && ev "requirements.txt"
+  if [ -f "$REPO/pyproject.toml" ] && grep -q '\[tool\.pytest' "$REPO/pyproject.toml" 2>/dev/null; then
+    put test_cmd '"pytest"'; ev "pyproject [tool.pytest]"
+  elif [ -d "$REPO/tests" ] || ls "$REPO"/test_*.py >/dev/null 2>&1; then
+    put test_cmd '"pytest"'; ev "tests/ or test_*.py present"
+  elif [ -f "$REPO/manage.py" ]; then
+    put test_cmd '"python manage.py test"'; ev "manage.py (django)"
+  fi
+  if [ -f "$REPO/pyproject.toml" ] && grep -q '\[tool\.ruff' "$REPO/pyproject.toml" 2>/dev/null; then
+    put lint_cmd '"ruff check ."'; put format_cmd '"ruff format ."'; ev "pyproject [tool.ruff]"
+  elif ls "$REPO"/pylint*.rc "$REPO"/.pylintrc >/dev/null 2>&1; then
+    RC=$(ls "$REPO"/pylint*.rc "$REPO"/.pylintrc 2>/dev/null | head -1)
+    put lint_cmd "\"pylint --rcfile=$(basename "$RC")\""; ev "$(basename "$RC")"
+  fi
+elif [ -f "$REPO/Cargo.toml" ]; then
+  put language '"rust"'; ev "Cargo.toml"
+  put test_cmd '"cargo test"'; put lint_cmd '"cargo clippy -- -D warnings"'; put format_cmd '"cargo fmt"'
+elif [ -f "$REPO/go.mod" ]; then
+  put language '"go"'; ev "go.mod"
+  put test_cmd '"go test ./..."'; put lint_cmd '"go vet ./..."'; put format_cmd '"gofmt -w ."'
+elif [ -f "$REPO/Makefile" ]; then
+  put language '"make-based"'; ev "Makefile"
+  grep -q '^lint:' "$REPO/Makefile" && { put lint_cmd '"make lint"'; ev "Makefile lint target"; }
+fi
+
+# ---- Pass 2: the project's own test entry point overrides the guess ----
+
+# First test-shaped top-level service in a compose file (2-space indent under
+# services:). Matches: test, tests, test-*, tests_*, *-test, *_tests, …
+find_test_service() {
+  awk '
+    /^services:/ { in_s=1; next }
+    in_s && /^[^ \t]/ { in_s=0 }
+    in_s && /^  [A-Za-z0-9_-]+:/ {
+      s=$1; sub(/:$/, "", s)
+      if (s ~ /^(tests?|tests?[-_].*|.*[-_]tests?)$/) { print s; exit }
+    }
+  ' "$1"
+}
+
+COMPOSE_FILE=""
+for f in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
+  [ -f "$REPO/$f" ] && COMPOSE_FILE="$f" && break
+done
+COMPOSE_TEST_FILE=""
+for f in docker-compose.test.yml docker-compose.test.yaml compose.test.yaml compose.test.yml \
+         docker-compose.tests.yml docker-compose.ci.yml docker-compose.ci.yaml; do
+  [ -f "$REPO/$f" ] && COMPOSE_TEST_FILE="$f" && break
+done
+
+if [ -n "$COMPOSE_FILE" ]; then
+  put compose_file "\"$COMPOSE_FILE\""; ev "$COMPOSE_FILE"
+fi
+
+if [ -n "$COMPOSE_FILE" ] && [ -z "$COMPOSE_TEST_FILE" ]; then
+  SVC=$(find_test_service "$REPO/$COMPOSE_FILE")
+  if [ -n "$SVC" ]; then
+    put test_cmd "\"docker compose run --rm $SVC\""
+    ev "$COMPOSE_FILE service '$SVC'"
+  fi
+fi
+
+if [ -n "$COMPOSE_TEST_FILE" ]; then
+  put compose_test_file "\"$COMPOSE_TEST_FILE\""
+  SVC=$(find_test_service "$REPO/$COMPOSE_TEST_FILE")
+  if [ -n "$SVC" ]; then
+    put test_cmd "\"docker compose -f $COMPOSE_TEST_FILE run --rm $SVC\""
+    ev "$COMPOSE_TEST_FILE service '$SVC'"
+  else
+    put test_cmd "\"docker compose -f $COMPOSE_TEST_FILE up --build --abort-on-container-exit\""
+    ev "$COMPOSE_TEST_FILE (no test-shaped service found — confirm the exact invocation)"
+  fi
+fi
+
+# A Makefile test target is the repo's curated entry point (it usually wraps
+# the compose/tox/whatever invocation) — it wins over everything above.
+if [ -f "$REPO/Makefile" ] && grep -q '^test:' "$REPO/Makefile"; then
+  put test_cmd '"make test"'; ev "Makefile test target"
+fi
+
+cat "$OUT"
+echo

@@ -1,0 +1,6 @@
+{
+  "_comment": "Copy to fixtures.local.json (gitignored) and point labels at LOCAL git repos to eval against. Fixture identities are private: never commit fixtures.local.json or reference fixture names/paths in any tracked file — run-eval.sh's privacy grep enforces this. The built-in 'sandbox' and 'sandbox-nogit' fixtures always run and need no configuration.",
+  "example-fixture": {
+    "path": "/path/to/some/local/git/repo"
+  }
+}

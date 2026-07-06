@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "agent-loop org policy (.claude/agent-loop/policy.json) — goals may be stricter, never weaker",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "_comment": { "type": "string" },
+    "tdd": { "type": "boolean" },
+    "critic": { "type": "boolean" },
+    "optimize": { "type": "boolean" },
+    "plan_approval": { "enum": ["always"] },
+    "budget_tokens": { "type": "integer", "minimum": 1 }
+  }
+}

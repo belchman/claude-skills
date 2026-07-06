@@ -1,0 +1,6 @@
+{
+  "name": "01-init-cold",
+  "purpose": "/agent-loop init on a repo with no Claude harness builds the harness plane; doctor ends healthy (WARNs allowed, no FAILs)",
+  "max_turns": 25,
+  "skip_nogit": false
+}

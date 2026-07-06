@@ -1,0 +1,64 @@
+#!/bin/sh
+# al-fleet — one-line status per repo across a fleet of agent-loop repos.
+#
+#   al-fleet <repo-dir>...
+#   AL_FLEET_REPOS=/path/one:/path/two al-fleet
+#
+# Columns: repo | goal id | status | iter/max | plan | flags | tokens | journal
+# Exit 1 when any repo NEEDS A HUMAN (plan awaiting approval, stall-paused,
+# iteration/budget ceiling) — wire it to CI/cron as a fleet health probe.
+set -u
+
+BIN_DIR=$(dirname "$0")
+ALJSON="$BIN_DIR/al-json"
+
+REPOS="$*"
+if [ -z "$REPOS" ] && [ -n "${AL_FLEET_REPOS:-}" ]; then
+  REPOS=$(printf '%s' "$AL_FLEET_REPOS" | tr ':' ' ')
+fi
+[ -n "$REPOS" ] || { echo "al-fleet: no repos (args or AL_FLEET_REPOS=path1:path2)" >&2; exit 2; }
+
+NEEDS_HUMAN=0
+printf '%-30s %-28s %-9s %-8s %-15s %-22s %-10s %s\n' \
+  "REPO" "GOAL" "STATUS" "ITER" "PLAN" "FLAGS" "TOKENS" "JOURNAL"
+
+for repo in $REPOS; do
+  AL="$repo/.claude/agent-loop"
+  NAME=$(basename "$repo")
+  if [ ! -f "$AL/goal.json" ]; then
+    printf '%-30s %-28s %-9s %-8s %-15s %-22s %-10s %s\n' "$NAME" "-" "no-goal" "-" "-" "-" "-" "-"
+    continue
+  fi
+  GID=$("$ALJSON" get "$AL/goal.json" id 2>/dev/null || echo "?")
+  GST=$("$ALJSON" get "$AL/goal.json" status 2>/dev/null || echo "?")
+  MAXI=$("$ALJSON" get "$AL/goal.json" max_iterations 2>/dev/null || echo "?")
+  ITER="?"; PLAN="-"; TT="-"; FLAGS=""
+  if [ -f "$AL/state.json" ]; then
+    ITER=$("$ALJSON" get "$AL/state.json" iteration 2>/dev/null || echo "?")
+    PLAN=$("$ALJSON" get "$AL/state.json" plan.status 2>/dev/null || echo "-")
+    TT=$("$ALJSON" get "$AL/state.json" tokens_total 2>/dev/null || echo "-")
+    PAUSED=$("$ALJSON" get "$AL/state.json" paused_by_stall 2>/dev/null || echo false)
+    [ "$PAUSED" = "true" ] && FLAGS="$FLAGS stalled" && NEEDS_HUMAN=1
+    [ "$PLAN" = "awaiting-human" ] && FLAGS="$FLAGS awaiting-approval" && NEEDS_HUMAN=1
+    case "$ITER$MAXI" in *[!0-9]*) : ;; *)
+      [ "$MAXI" -gt 0 ] && [ "$ITER" -ge "$MAXI" ] && FLAGS="$FLAGS at-ceiling" && NEEDS_HUMAN=1 ;;
+    esac
+    BG=$("$ALJSON" get "$AL/goal.json" budget_tokens 2>/dev/null || echo 0)
+    case "$TT$BG" in *[!0-9]*) : ;; *)
+      [ "$BG" -gt 0 ] && [ "$TT" -ge "$BG" ] && FLAGS="$FLAGS over-budget" && NEEDS_HUMAN=1 ;;
+    esac
+  fi
+  ERRF="$AL/logs/consecutive_errors"
+  if [ -f "$ERRF" ]; then
+    ERRS=$(cat "$ERRF" 2>/dev/null || echo 0)
+    case "$ERRS" in ''|*[!0-9]*) ERRS=0 ;; esac
+    [ "$ERRS" -ge 3 ] && FLAGS="$FLAGS breaker-open" && NEEDS_HUMAN=1
+  fi
+  JSZ="-"
+  [ -f "$AL/audit.jsonl" ] && JSZ="$(wc -c < "$AL/audit.jsonl" | tr -d ' ')B"
+  [ -n "$FLAGS" ] || FLAGS=" ok"
+  printf '%-30s %-28s %-9s %-8s %-15s %-22s %-10s %s\n' \
+    "$NAME" "$GID" "$GST" "$ITER/$MAXI" "$PLAN" "${FLAGS# }" "$TT" "$JSZ"
+done
+
+exit "$NEEDS_HUMAN"

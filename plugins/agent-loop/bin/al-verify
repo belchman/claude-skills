@@ -1,0 +1,46 @@
+#!/bin/sh
+# al-verify — layer (a) of the verify contract: run every verify[].cmd from
+# goal.json; ALL must exit 0. Prints one line per check; exits nonzero if any
+# fail. No exceptions, no "close enough" — a weak verify layer is how loops
+# produce confident garbage.
+#
+# Usage: al-verify [--file <goal.json>]     (runs from $CLAUDE_PROJECT_DIR or cwd)
+set -u
+
+BIN_DIR=$(dirname "$0")
+ALJSON="$BIN_DIR/al-json"
+
+GOAL_FILE="${AL_GOAL_FILE:-${CLAUDE_PROJECT_DIR:-.}/.claude/agent-loop/goal.json}"
+if [ "${1:-}" = "--file" ]; then
+  GOAL_FILE="$2"; shift 2
+fi
+[ -f "$GOAL_FILE" ] || { echo "al-verify: no goal.json at $GOAL_FILE" >&2; exit 3; }
+
+# refuse to "verify" against a corrupt spec — a broken goal.json passing
+# silently is exactly the confident-garbage failure mode this layer prevents
+AL_GOAL_FILE="$GOAL_FILE" "$BIN_DIR/al-goal" validate >/dev/null 2>&1 || {
+  echo "al-verify: goal.json is invalid (run al-goal validate) — refusing to verify" >&2; exit 3; }
+
+REPO="${CLAUDE_PROJECT_DIR:-.}"
+N=$("$ALJSON" len "$GOAL_FILE" verify) || { echo "al-verify: cannot read verify[] from goal.json" >&2; exit 3; }
+
+if [ "$N" -eq 0 ]; then
+  echo "al-verify: verify[] is empty — nothing to run (doctor D07 warns about this)" >&2
+  exit 0
+fi
+
+FAILED=0
+i=0
+while [ "$i" -lt "$N" ]; do
+  CMD=$("$ALJSON" get "$GOAL_FILE" "verify.$i.cmd")
+  [ -n "$CMD" ] || { echo "FAIL <empty cmd at verify[$i]>"; FAILED=1; i=$((i+1)); continue; }
+  if ( cd "$REPO" && sh -c "$CMD" ) >/dev/null 2>&1; then
+    echo "PASS $CMD"
+  else
+    RC=$?
+    echo "FAIL $CMD (exit $RC)"
+    FAILED=1
+  fi
+  i=$((i + 1))
+done
+exit "$FAILED"

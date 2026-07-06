@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "claude-md-audit",
-      "description": "Example plugin: PreToolUse hook that lints CLAUDE.md on every Edit/Write and blocks writes that introduce structural errors.",
+      "description": "PreToolUse hook that lints CLAUDE.md on every Edit/Write and blocks writes that introduce structural errors. Example of a plugin-scoped hook.",
       "version": "1.0.0",
       "source": "./plugins/claude-md-audit",
       "author": {
@@ -18,9 +18,18 @@
     },
     {
       "name": "audit-agent-overhead",
-      "description": "Audit a Claude Code setup (global, project, plugin scope) for the 9 token-waste patterns that silently inflate cost. Slash-only.",
+      "description": "Audit a Claude Code setup (global ~/.claude, project .claude, plugin scope) for the 9 token-waste patterns that silently inflate cost and burn through usage limits. Slash-only.",
       "version": "1.0.0",
       "source": "./plugins/audit-agent-overhead",
+      "author": {
+        "name": "belchman"
+      }
+    },
+    {
+      "name": "agent-loop",
+      "description": "Goal-driven loop harness: /agent-loop init|new|run|approve|reject|status|doctor|canonize. Builds the 7-file Claude Code harness in any repo, then runs goal-spec-driven plan→act→verify→optimize loops with human plan approval, stall detection and scheduler integration — each pass proposes spec/verify improvements for the next.",
+      "version": "0.3.0",
+      "source": "./plugins/agent-loop",
       "author": {
         "name": "belchman"
       }

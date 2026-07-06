@@ -1,0 +1,72 @@
+#!/bin/sh
+# al-hash — the stall detector's input: sha256 of (done_means JSON + repo
+# content digest). If this hash is unchanged after an iteration, the loop
+# made no observable progress (Ralph Wiggum guard). Git repos digest via
+# `git ls-files -s` (mode+blob+path — content-addressed) + `git diff` for
+# uncommitted edits + a per-file sha256 of untracked file CONTENT (size
+# alone made same-size edits invisible); non-git trees fall back to a
+# sorted find digest of path+size+mtime.
+#
+# Usage: al-hash [--state <file>] [--root <dir>]
+#   --state  state.json to read done_means from (default: resolved like al-state)
+#   --root   repo subdir to scope the digest (default: goal.json "root" or repo root)
+set -u
+
+BIN_DIR=$(dirname "$0")
+ALJSON="$BIN_DIR/al-json"
+
+STATE_FILE="${AL_STATE_FILE:-${CLAUDE_PROJECT_DIR:-.}/.claude/agent-loop/state.json}"
+ROOT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --state) STATE_FILE="$2"; shift 2 ;;
+    --root)  ROOT="$2"; shift 2 ;;
+    *) echo "al-hash: unknown arg $1" >&2; exit 2 ;;
+  esac
+done
+
+REPO="${CLAUDE_PROJECT_DIR:-.}"
+GOAL_JSON="$(dirname "$STATE_FILE")/goal.json"
+if [ -z "$ROOT" ] && [ -f "$GOAL_JSON" ]; then
+  R=$("$ALJSON" get "$GOAL_JSON" root 2>/dev/null || true)
+  [ -n "$R" ] && [ "$R" != "null" ] && ROOT="$R"
+fi
+SCOPE="$REPO${ROOT:+/$ROOT}"
+
+if command -v shasum >/dev/null 2>&1; then SHA="shasum -a 256"
+elif command -v sha256sum >/dev/null 2>&1; then SHA="sha256sum"
+elif command -v openssl >/dev/null 2>&1; then SHA="openssl dgst -sha256 -r"
+else echo "al-hash: no sha256 tool (shasum/sha256sum/openssl)" >&2; exit 4
+fi
+
+DM="{}"
+[ -f "$STATE_FILE" ] && DM=$("$ALJSON" get "$STATE_FILE" done_means 2>/dev/null || printf '{}')
+
+digest() {
+  if git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    # ls-files -s shows staged blobs; add diff so uncommitted edits move the
+    # hash, and untracked files by CONTENT hash (size alone hid same-size
+    # edits). `.claude/` is EXCLUDED everywhere: the loop's own bookkeeping
+    # (MEMORY.md, state.json) changes every iteration and must not count as
+    # "progress" or the stall detector (Guard 3) can never fire.
+    git -C "$REPO" ls-files -s -- "${ROOT:-.}" ':(exclude).claude' 2>/dev/null
+    git -C "$REPO" diff -- "${ROOT:-.}" ':(exclude).claude' 2>/dev/null
+    git -C "$REPO" ls-files --others --exclude-standard -- "${ROOT:-.}" ':(exclude).claude' 2>/dev/null | while IFS= read -r f; do
+      [ -f "$REPO/$f" ] && printf '%s ' "$f" && $SHA < "$REPO/$f"
+    done
+  else
+    # path+size+mtime: mtime makes same-size edits visible without hashing
+    # every file. Detect the stat flavor ONCE (BSD -f vs GNU -c).
+    if stat -f %m "$SCOPE" >/dev/null 2>&1; then MT="-f %m"
+    elif stat -c %Y "$SCOPE" >/dev/null 2>&1; then MT="-c %Y"
+    else MT=""
+    fi
+    find "$SCOPE" \( -name .git -o -name node_modules -o -name .claude \) -prune -o -type f -print 2>/dev/null \
+      | LC_ALL=C sort | while IFS= read -r f; do
+          # shellcheck disable=SC2086  # MT is an intentional flag pair
+          printf '%s %s %s\n' "$f" "$(wc -c < "$f" | tr -d ' ')" "$([ -n "$MT" ] && stat $MT "$f" 2>/dev/null || echo 0)"
+        done
+  fi
+}
+
+{ printf '%s\n' "$DM"; digest; } | $SHA | cut -d' ' -f1

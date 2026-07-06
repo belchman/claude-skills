@@ -1,0 +1,18 @@
+---
+name: verify
+description: How to verify changes in this project — run the checks below and report PASS/FAIL per check. Use when asked to verify work in this repo.
+---
+
+<!--
+  Project verify skill stub written by /agent-loop init. Fill in the real
+  commands; /agent-loop new copies them into goal.json verify[] as defaults.
+  Placeholders: {{TEST_CMD}} {{LINT_CMD}}
+-->
+# Verify this project
+
+Run each check; a check passes only on exit code 0. Report one line per
+check: `PASS|FAIL <cmd>`. Never call a change verified if any check fails.
+
+1. Tests: `{{TEST_CMD}}`
+2. Lint: `{{LINT_CMD}}`
+3. (add project-specific smoke checks here)

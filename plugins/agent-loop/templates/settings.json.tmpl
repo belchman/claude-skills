@@ -1,0 +1,43 @@
+{
+  "_comment": "Fragment MERGED into .claude/settings.json by al-merge-settings (never copied over it). Arrays merge as set-union so existing entries survive. Hook commands point at repo-owned copies in .claude/hooks/ — the plugin's own registrations self-gate when these exist.",
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(al-doctor:*)",
+      "Bash(al-state:*)",
+      "Bash(al-verify:*)",
+      "Bash(al-goal:*)",
+      "Bash(al-hash:*)",
+      "Bash(al-detect:*)",
+      "Bash(al-detect-skills:*)",
+      "Bash(al-json:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write",
+        "hooks": [
+          { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard-destructive.sh" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/format-on-write.sh" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/loop-checkpoint.sh" }
+        ]
+      }
+    ]
+  }
+}

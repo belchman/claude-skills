@@ -1,0 +1,5 @@
+/agent-loop run
+
+Non-interactive eval run: follow the iteration contract exactly and honor
+every WAKE gate — if the state says the loop is paused, stop immediately and
+report instead of continuing.
