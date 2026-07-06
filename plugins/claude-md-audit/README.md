@@ -43,25 +43,32 @@ the write, not weeks later.
 
 ## How it's wired
 
-`.claude-plugin/plugin.json` registers a PreToolUse hook:
+`hooks/hooks.json` at the plugin root — the canonical, auto-discovered
+location for plugin hooks (no `plugin.json` entry needed) — registers a
+PreToolUse hook:
 
 ```jsonc
-"hooks": {
-  "PreToolUse": [
-    {
-      "matcher": "Edit|Write",
-      "command": "bash ${CLAUDE_PLUGIN_DIR}/hooks/check-claude-md.sh"
-    }
-  ]
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/check-claude-md.sh" }
+        ]
+      }
+    ]
+  }
 }
 ```
 
-The `${CLAUDE_PLUGIN_DIR}` env var is set by Claude Code to the plugin's
+The `${CLAUDE_PLUGIN_ROOT}` variable is set by Claude Code to the plugin's
 install directory — so the path is install-location-agnostic.
 
 ## Files
 
-- `.claude-plugin/plugin.json` — manifest with hook registration
+- `.claude-plugin/plugin.json` — manifest
+- `hooks/hooks.json` — hook registration (auto-discovered)
 - `hooks/check-claude-md.sh` — the PreToolUse guard (extracts `file_path`
   from stdin JSON, gates on basename, delegates to the linter)
 - `hooks/lint-claude-md.sh` — bundled linter so the plugin is self-contained.

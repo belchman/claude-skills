@@ -1,18 +1,10 @@
 {
   "name": "claude-md-audit",
-  "description": "PreToolUse guard that lints CLAUDE.md on every Edit/Write and blocks the write if it finds structural errors. Example of a plugin-scoped hook.",
+  "description": "PreToolUse hook that lints CLAUDE.md on every Edit/Write and blocks writes that introduce structural errors. Example of a plugin-scoped hook.",
   "version": "1.0.0",
   "author": {
     "name": "belchman"
   },
   "license": "MIT",
-  "keywords": ["hooks", "claude-md", "lint", "example"],
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Edit|Write",
-        "command": "bash ${CLAUDE_PLUGIN_DIR}/hooks/check-claude-md.sh"
-      }
-    ]
-  }
+  "keywords": ["hooks", "claude-md", "lint", "example"]
 }
