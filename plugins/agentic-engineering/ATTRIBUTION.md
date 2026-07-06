@@ -41,6 +41,45 @@ License: **MIT** © 2026 Matt Pocock — full text in `licenses/mattpocock-skill
 | `triage` | Tightly coupled to an external tracker's label vocabulary. Doesn't fit the local-markdown-issues convention. |
 | `setup-matt-pocock-skills` | Meta-installer for upstream's framework. Not relevant here. |
 
+## GAIR-NLP/ASI-Evolve
+
+Source: https://github.com/GAIR-NLP/ASI-Evolve
+Commit at vendor time: `fb8a67e552e25cf8b7144d4e7f1a17f665055130` (2026-05-13)
+License: **Apache 2.0** — full text in `licenses/asi-evolve-LICENSE`.
+
+The `evolve/` skill is a near-verbatim vendoring of `skills/evolve/` from upstream. Provides a single-agent, preflight-gated learn → design → experiment → analyze loop with cognition store, experiment database, and CLI toolbelt (`evolve-brief`, `evolve-cognition`, `evolve-db`, `evolve-eval`, `evolve-files`, `evolve-summary`) plus the vendored `evolve_core/` runtime (samplers: `ucb1`, `greedy`, `random`, `island`, optional `custom`).
+
+### Vendored verbatim
+
+| File | Notes |
+| --- | --- |
+| `evolve/agents/openai.yaml` | Verbatim. |
+| `evolve/references/architecture.md` | Verbatim. |
+| `evolve/references/operating_model.md` | Verbatim. |
+| `evolve/references/preflight.md` | Verbatim. |
+| `evolve/references/run_spec.md` | Verbatim. |
+| `evolve/references/toolbelt.md` | Verbatim. |
+| `evolve/scripts/evolve-brief` | Verbatim. |
+| `evolve/scripts/evolve-cognition` | Verbatim. |
+| `evolve/scripts/evolve-db` | Verbatim. |
+| `evolve/scripts/evolve-eval` | Verbatim. |
+| `evolve/scripts/evolve-files` | Verbatim. |
+| `evolve/scripts/evolve-summary` | Verbatim. |
+| `evolve/scripts/evolve_core/**` | Verbatim (every file under `evolve_core/`, including `algorithms/` subdir). |
+
+### Adapted
+
+| File | Notes |
+| --- | --- |
+| `evolve/SKILL.md` | One-word change: upstream `description` says "Codex needs to align…"; vendored as "Claude needs to align…" so the auto-router triggers correctly here. All body content is verbatim. |
+
+### Locally added (not in upstream)
+
+| File | Notes |
+| --- | --- |
+| `evolve/INSTALL.md` | Local README covering required (`pyyaml`, `numpy`) and optional (`sentence-transformers`, `faiss-cpu`) deps, CLI smoke commands, headless `claude -p` invocation, and the preflight-confirmation contract. |
+| `evolve/agents/claude.yaml` | Mirror of upstream's `agents/openai.yaml` plus a `runtime` block documenting that the agent is Claude, no LLM API keys are required, and which Python deps are needed. |
+
 ## Other vendored skills (not from mattpocock/skills)
 
 | Skill | Source | License | Notes |

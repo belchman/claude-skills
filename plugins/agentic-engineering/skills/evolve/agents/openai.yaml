@@ -1,0 +1,7 @@
+interface:
+  display_name: "ASI Evolve"
+  short_description: "Run preflight-gated evaluator-driven evolution loops"
+  default_prompt: "Use $evolve to turn an objective, evaluator, writable scope, and cognition into an explicit ASI-Evolve run that iterates round by round."
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,14 @@
+interface:
+  display_name: "ASI Evolve"
+  short_description: "Run preflight-gated evaluator-driven evolution loops"
+  default_prompt: "Use the evolve skill to turn an objective, evaluator, writable scope, and cognition into an explicit ASI-Evolve run that iterates round by round."
+
+policy:
+  allow_implicit_invocation: true
+
+runtime:
+  agent: "claude"
+  headless_invocation: "claude -p \"use the evolve skill to ...\""
+  python_deps_required: ["pyyaml", "numpy"]
+  python_deps_optional: ["sentence-transformers", "faiss-cpu"]
+  llm_api_keys_required: []
