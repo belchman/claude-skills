@@ -29,3 +29,13 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: sh evals/agent-loop/run-eval.sh --fixtures sandbox
+      # transcripts land in gitignored runs/ and die with the runner — upload
+      # them so a red nightly is debuggable without a local rerun
+      - name: Upload eval transcripts
+        if: always() && steps.key.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-loop-eval-runs
+          path: evals/agent-loop/runs/
+          if-no-files-found: ignore
+          retention-days: 14

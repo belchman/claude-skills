@@ -104,6 +104,17 @@ def default_registry():
         os.path.expanduser("~"), ".claude", "agent-loop", "fleet.list")
 
 
+def breaker_threshold():
+    """Circuit-breaker threshold — the same AL_LOOP_MAX_ERRORS knob the
+    scheduler (al-loop.sh) and al-fleet honor, so all three tools agree on
+    when a loop reads breaker-open."""
+    try:
+        v = int(os.environ.get("AL_LOOP_MAX_ERRORS", "3"))
+    except (TypeError, ValueError):
+        return 3
+    return v if v > 0 else 3
+
+
 def read_registry(path):
     """Registry lines -> ordered, deduped, realpath'd, existing dirs only.
     Strictly read-only: dead paths are pruned from VIEW, never from the file."""
@@ -182,7 +193,7 @@ def slim_snapshot(repo):
     if isinstance(tt, (int, float)) and isinstance(bg, (int, float)) \
             and bg > 0 and tt >= bg:
         flags.append("over-budget")
-    if errs >= 3:
+    if errs >= breaker_threshold():
         flags.append("breaker-open")
     dm = state.get("done_means") or {}
     return {

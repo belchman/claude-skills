@@ -136,7 +136,8 @@ for spec in $SCENARIOS; do
     trial=1
     while [ "$trial" -le "$TRIALS" ]; do
       TOTAL=$((TOTAL + 1))
-      TAG="$SCEN/$fixture${TRIALS:+.t$trial}"
+      TAG="$SCEN/$fixture"
+      [ "$TRIALS" -gt 1 ] && TAG="$TAG.t$trial"
       echo ""
       echo "=== $TAG (max_turns=$MAX_TURNS) ==="
       if ! wt_create "$fixture"; then

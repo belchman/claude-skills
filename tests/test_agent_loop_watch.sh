@@ -141,6 +141,21 @@ if start_watch "$ACT_LOG" --allow-actions; then
   [ "$REJ_CODE" = "400" ] && ok "POST /api/reject with no reason -> 400" \
                           || bad "POST /api/reject with no reason -> 400 (got $REJ_CODE)"
 
+  # reject SUCCESS path (the other half of the human control surface)
+  REJOK_CODE=$(curl -s -m 5 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+    -d '{"reason":"wrong file"}' "$ABASE/api/reject")
+  [ "$REJOK_CODE" = "200" ] && ok "POST /api/reject with a reason -> 200" \
+                            || bad "POST /api/reject with a reason -> 200 (got $REJOK_CODE)"
+  [ "$("$BIN/al-state" --state "$AL/state.json" get plan.status 2>/dev/null)" = "none" ] \
+    && ok "reject resets plan.status to none" || bad "reject resets plan.status to none"
+  [ "$("$BIN/al-state" --state "$AL/state.json" get plan.rejected_reason 2>/dev/null)" = "wrong file" ] \
+    && ok "reject stores the reason for the next re-plan" || bad "reject stores the reason for the next re-plan"
+  grep '"event":"plan_rejected"' "$AL/audit.jsonl" 2>/dev/null | grep -q '"actor":"[^"]*@al-watch"' \
+    && ok "plan_rejected journaled with actor *@al-watch" \
+    || bad "plan_rejected journaled with actor *@al-watch"
+  # re-propose so the approve tests below still exercise awaiting -> approved
+  "$BIN/al-state" --state "$AL/state.json" plan-propose '{"tasks":[{"task":"t"}],"assumptions":[]}' >/dev/null 2>&1
+
   APP_CODE=$(curl -s -m 5 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' "$ABASE/api/approve")
   [ "$APP_CODE" = "200" ] && ok "POST /api/approve -> 200" \
                           || bad "POST /api/approve -> 200 (got $APP_CODE)"
@@ -155,6 +170,10 @@ if start_watch "$ACT_LOG" --allow-actions; then
 else
   bad "actions server starts (al-watch missing or never ready)"
   bad "POST /api/reject with no reason -> 400 (no server)"
+  bad "POST /api/reject with a reason -> 200 (no server)"
+  bad "reject resets plan.status to none (no server)"
+  bad "reject stores the reason for the next re-plan (no server)"
+  bad "plan_rejected journaled with actor *@al-watch (no server)"
   bad "POST /api/approve -> 200 (no server)"
   bad "approve moves plan.status to approved (no server)"
   bad "plan_approved journaled with actor *@al-watch (no server)"

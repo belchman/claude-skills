@@ -27,8 +27,8 @@
     },
     {
       "name": "agent-loop",
-      "description": "Goal-driven loop harness: /agent-loop init|new|run|approve|reject|status|doctor|canonize. Builds the 7-file Claude Code harness in any repo, then runs goal-spec-driven plan→act→verify→optimize loops with human plan approval, stall detection and scheduler integration — each pass proposes spec/verify improvements for the next.",
-      "version": "0.4.0",
+      "description": "Goal-driven loop harness: /agent-loop init|new|run|approve|reject|status|doctor|watch|canonize. Builds the 7-file Claude Code harness in any repo, then runs goal-spec-driven plan→act→verify→optimize loops with human plan approval, stall detection and scheduler integration — each pass proposes spec/verify improvements for the next.",
+      "version": "0.4.1",
       "source": "./plugins/agent-loop",
       "author": {
         "name": "belchman"

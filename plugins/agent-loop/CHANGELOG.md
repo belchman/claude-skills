@@ -4,6 +4,57 @@ All notable changes to this plugin. Semver; the marketplace entry and
 `.claude-plugin/plugin.json` must carry the same version (CI-enforced by
 `tests/test_marketplace_sync.sh`).
 
+## 0.4.1 — 2026-07-07
+
+Hardening wave — audit-driven: enforcement holes closed, concurrency made
+mechanical instead of model-trusted.
+
+- **al-json write bypass closed**: the settings fragment now allowlists only
+  read verbs (`get`/`len`/`check`/`validate`); guard-destructive denies raw
+  `al-json set/append/del/merge` on GOAL.md/goal.json/state.json mid-run
+  (backstop for installs that merged the old `al-json:*` allowlist). The
+  "an unverified pass is unrepresentable" guarantee holds again.
+- **rm guard hardened**: recursive+force rm is now blocked on ANY absolute
+  path, `~`/`$HOME`, parent dirs (`..`) and quoted targets — `/*`,
+  `/etc/x`, and `"$HOME/x"` were verified bypasses. Repo-relative subdirs
+  (`build/`, `./build`) stay allowed.
+- **Ownership-aware Stop hook**: loop-checkpoint clears the run flag and
+  releases the lease only for runs it owns (session match) or dead owners —
+  a bystander session in the same repo can no longer yank a live headless
+  run's lease mid-iteration.
+- **Harness-level run lease**: al-loop.sh itself acquires the lease for the
+  whole tick (`AL_LEASE_PID`, inherited so the skill's own acquire is a
+  re-entrant refresh), releases it on exit, and clears a phantom
+  `run_in_progress` after the run. Overlapping cron/launchd ticks are now
+  mutually exclusive at the harness level, not by model behavior.
+- **Dead-owner lease takeover**: a durable owner pid that no longer exists
+  on this host is taken over immediately (journaled) instead of locking the
+  repo for the remaining TTL (default up to 1h).
+- **al-fleet**: repo paths with spaces survive (newline-delimited
+  enumeration end to end); `AL_LOOP_MAX_ERRORS` is honored by al-fleet and
+  al-watch's breaker-open flag (both hard-coded 3 before, disagreeing with
+  the scheduler when tuned).
+- **jq engine parity**: `al-json validate` on the jq engine now implements
+  the same draft-07 subset as python3/node (it checked `required` only —
+  type/enum mismatches passed silently on jq-only machines, weakening every
+  schema gate).
+- goal.json.tmpl's `_comment` no longer embeds literal `{{...}}` tokens
+  (mechanical substitution corrupted the JSON).
+- Docs: README worked-example goal.json validates again (`context_budget`);
+  `plan_approval` documented in goal-spec; the `optimize` policy floor is
+  correctly described as advisory (doctor D15) rather than gate-enforced;
+  `GOAL_STATE_WRITE`, `AL_LOOP_PLUGIN_DIR`, `AL_WATCH_DEBUG`, `AL_ACTOR`
+  documented; paused-goal-blocks-`new` contradiction resolved; design doc
+  synced to the 0.4.0 reality (9 subcommands, D01–D16, fleet/watch shipped);
+  manifests mention `watch`.
+- Evals/CI: the nightly workflow uploads `runs/` transcripts as artifacts
+  (red nightlies were undebuggable); trial tags only suffix multi-trial runs.
+- ~60 new model-free tests: rm/al-json guard cases, Stop-hook ownership,
+  tick lease + post-run backstop, durable-lease semantics, al-fleet
+  spaces/breaker, `/api/reject` success paths in both watch modes,
+  `GET /api/state?repo=`, template↔schema validation, and
+  `validate`/`merge` in the 3-engine parity loop.
+
 ## 0.4.0 — 2026-07-06
 
 The console wave — built through the loop itself (three goals, every gate).

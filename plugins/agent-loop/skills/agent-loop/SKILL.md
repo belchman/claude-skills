@@ -217,9 +217,10 @@ For each iteration:
    present, also run `adversarial-review` in report-only mode; treat its
    confirmed findings as verifier failures.
 5. **RECORD** — record-iter first; ticks and everything else are gated on it.
-   - Always: `al-state record-iter '<verdict-json>' '<planned-json>'` — pass
-     the verifier's FULL verdict including evidence (the journal keeps it
-     raw; working state stores the sanitized summary). This updates
+   - Always: `al-state record-iter '<verdict-json>'` — pass the verifier's
+     FULL verdict including evidence (the journal keeps it raw; working
+     state stores the sanitized summary; the planned task list is taken
+     from the approved plan, never from the caller). This updates
      hash/stall/history, clears run_in_progress, auto-pauses after 2
      no-progress iterations, and journals the iteration. **The verify gate
      lives here**: for pass=true, record-iter re-runs `al-verify` itself and
@@ -234,8 +235,8 @@ For each iteration:
      iteration's planning input. Log it: `al-state log '<iter N: fail — why>'`.
    - Always use these commands, never the Edit tool — `.claude/` writes are
      permission-gated in headless runs, al-state is allowlisted. Direct
-     `al-state set` on iteration/done_means/last_verdict/history is refused
-     and journaled.
+     `al-state set` on iteration/done_means/last_verdict/history/
+     progress_hash/plan (or any subpath) is refused and journaled.
 6. **OPTIMIZE** — the last act of every iteration: this pass tunes the next
    one. SKIP entirely (report `optimize: skipped — <reason>`) when goal.json
    `optimize` is `false`, when RECORD journaled no iteration this pass, or

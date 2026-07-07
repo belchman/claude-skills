@@ -58,6 +58,24 @@ check "plain rm of a file allowed" $? 0
 bash_event "git push --force-with-lease origin main" | "$HOOKS/guard-destructive.sh" >/dev/null
 check "git push --force-with-lease ALLOWED (safe force)" $? 0
 
+echo "# guard-destructive.sh — rm hardening (absolute/home/parent paths, quotes)"
+bash_event "rm -rf /*" | "$HOOKS/guard-destructive.sh" >/dev/null
+check "rm -rf /* denied (root glob)" $? 2
+bash_event "rm -rf /etc/passwd" | "$HOOKS/guard-destructive.sh" >/dev/null
+check "rm -rf /etc/passwd denied (absolute path)" $? 2
+bash_event 'rm -rf \"$HOME/x\"' | "$HOOKS/guard-destructive.sh" >/dev/null
+check 'rm -rf "$HOME/x" denied (quoted expansion)' $? 2
+bash_event "rm -rf '/var/data'" | "$HOOKS/guard-destructive.sh" >/dev/null
+check "rm -rf '/var/data' denied (single-quoted absolute)" $? 2
+bash_event "rm -rf ../sibling" | "$HOOKS/guard-destructive.sh" >/dev/null
+check "rm -rf ../sibling denied (parent escape)" $? 2
+bash_event "rm -rf build/" | "$HOOKS/guard-destructive.sh" >/dev/null
+check "rm -rf build/ allowed (repo-relative subdir)" $? 0
+bash_event "rm -rf ./build" | "$HOOKS/guard-destructive.sh" >/dev/null
+check "rm -rf ./build allowed (repo-relative subdir)" $? 0
+bash_event "rm -rf node_modules dist" | "$HOOKS/guard-destructive.sh" >/dev/null
+check "rm -rf node_modules dist allowed" $? 0
+
 echo "# guard-destructive.sh — adversarial quoting (shim parsing, not grep)"
 # grep extraction truncated at the first escaped quote — verified bypass
 printf '%s' '{"tool_name":"Bash","tool_input":{"command":"echo \"x\" && rm -rf /"}}' \
@@ -94,11 +112,22 @@ write_event "$SANDBOX/.claude/agent-loop/GOAL.md" | GOAL_STATE_WRITE=1 "$HOOKS/g
 check "GOAL_STATE_WRITE sentinel bypasses (al-state tick path)" $? 0
 write_event "$SANDBOX/somefile.py" | "$HOOKS/guard-destructive.sh" >/dev/null
 check "normal file write allowed mid-run" $? 0
+# raw al-json writes are the Bash-shaped bypass of the same contract guard
+bash_event "al-json set $SANDBOX/.claude/agent-loop/state.json last_verdict {}" | "$HOOKS/guard-destructive.sh" >/dev/null
+check "al-json set on state.json denied mid-run (gate bypass closed)" $? 2
+bash_event "al-json del $SANDBOX/.claude/agent-loop/goal.json budget_tokens" | "$HOOKS/guard-destructive.sh" >/dev/null
+check "al-json del on goal.json denied mid-run" $? 2
+bash_event "al-json get $SANDBOX/.claude/agent-loop/state.json iteration" | "$HOOKS/guard-destructive.sh" >/dev/null
+check "al-json get on state.json allowed mid-run (reads are fine)" $? 0
+bash_event "al-json set $SANDBOX/.claude/agent-loop/state.json x 1" | GOAL_STATE_WRITE=1 "$HOOKS/guard-destructive.sh" >/dev/null
+check "GOAL_STATE_WRITE sentinel bypasses the al-json guard too" $? 0
 cat > "$SANDBOX/.claude/agent-loop/state.json" <<'EOF'
 {"run_in_progress": false}
 EOF
 write_event "$SANDBOX/.claude/agent-loop/GOAL.md" | "$HOOKS/guard-destructive.sh" >/dev/null
 check "GOAL.md write allowed when no run in progress (humans edit specs)" $? 0
+bash_event "al-json set $SANDBOX/.claude/agent-loop/state.json x 1" | "$HOOKS/guard-destructive.sh" >/dev/null
+check "al-json set allowed when no run in progress" $? 0
 
 echo "# double-registration: repo copy wins, plugin copy gates out"
 mkdir -p "$SANDBOX/.claude/hooks"
@@ -120,6 +149,39 @@ PATH="$REPO_ROOT/plugins/agent-loop/bin:$PATH" sh -c 'printf "{}" | "$0"' "$HOOK
 check "checkpoint runs" $? 0
 grep -q '"run_in_progress": false' "$SANDBOX/.claude/agent-loop/state.json" && ok "flag cleared by Stop backstop" || bad "flag cleared"
 grep -q '"interrupted_at": "20' "$SANDBOX/.claude/agent-loop/state.json" && ok "interrupted_at stamped" || bad "interrupted_at stamped"
+
+echo "# loop-checkpoint.sh — ownership (never yank a live run)"
+CKPT_LEASE="$SANDBOX/.claude/agent-loop/.lease"
+HOSTN=$(hostname 2>/dev/null || echo unknown)
+ckpt() { PATH="$REPO_ROOT/plugins/agent-loop/bin:$PATH" sh -c 'printf "%s" "$1" | "$0"' "$HOOKS/loop-checkpoint.sh" "$1"; }
+seed_running() {
+  cat > "$SANDBOX/.claude/agent-loop/state.json" <<'EOF'
+{"goal_id":"g","iteration":1,"done_means":{},"last_verdict":null,"progress_hash":null,"stall_count":0,"paused_by_stall":false,"stall_report":null,"run_in_progress":true,"interrupted_at":null,"context_tokens_last_iter":null,"history":[]}
+EOF
+}
+# live durable owner on this host -> a bystander session's Stop must not touch it
+seed_running
+mkdir -p "$CKPT_LEASE"
+printf '{"pid":%s,"pid_durable":true,"host":"%s","session_id":"owner-sess","acquired_at":"t","expires_epoch":9999999999}' "$$" "$HOSTN" > "$CKPT_LEASE/owner.json"
+ckpt '{"session_id":"bystander-sess"}'
+check "bystander Stop exits 0" $? 0
+grep -q '"run_in_progress" *: *true' "$SANDBOX/.claude/agent-loop/state.json" && ok "live run flag untouched by bystander" || bad "live run flag untouched by bystander"
+[ -f "$CKPT_LEASE/owner.json" ] && ok "live lease untouched by bystander" || bad "live lease untouched by bystander"
+# the owning session's own Stop cleans up even while the driver pid is alive
+ckpt '{"session_id":"owner-sess"}'
+check "owner Stop exits 0" $? 0
+grep -q '"run_in_progress": false' "$SANDBOX/.claude/agent-loop/state.json" && ok "owner Stop clears the flag" || bad "owner Stop clears the flag"
+[ -f "$CKPT_LEASE/owner.json" ] && bad "owner Stop releases the lease" || ok "owner Stop releases the lease"
+# dead owner -> orphaned run: any session may clean it
+seed_running
+sh -c ':' & CKDEAD=$!
+wait "$CKDEAD" 2>/dev/null
+mkdir -p "$CKPT_LEASE"
+printf '{"pid":%s,"pid_durable":true,"host":"%s","session_id":"gone-sess","acquired_at":"t","expires_epoch":9999999999}' "$CKDEAD" "$HOSTN" > "$CKPT_LEASE/owner.json"
+ckpt '{"session_id":"bystander-sess"}'
+check "dead-owner Stop exits 0" $? 0
+grep -q '"run_in_progress": false' "$SANDBOX/.claude/agent-loop/state.json" && ok "orphaned run cleaned by bystander" || bad "orphaned run cleaned by bystander"
+[ -d "$CKPT_LEASE" ] && bad "orphaned lease removed" || ok "orphaned lease removed"
 
 echo "# format-on-write.sh"
 printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$SANDBOX/x.py" | "$HOOKS/format-on-write.sh"

@@ -25,7 +25,9 @@ restart). Fallback installer: `sh plugins/agent-loop/bin/install.sh`.
 
 Requirements: a POSIX shell plus ONE of `python3`, `node`, or `jq` (all JSON
 handling goes through the `al-json` shim; `/agent-loop doctor` check D13
-verifies). Git is optional — without it, fan-out serializes and progress
+verifies). That one-of claim covers the core loop tools only — `al-watch`
+(the fleet console) is a python3 script, so it additionally requires
+`python3`. Git is optional — without it, fan-out serializes and progress
 hashing uses a file digest.
 
 ## Quickstart (5 minutes)
@@ -193,6 +195,7 @@ mechanical:
   "id": "2026-07-04-todos-pagination",
   "status": "active",
   "max_iterations": 10,
+  "context_budget": 120000,
   "plan_approval": "always",
   "verify": [
     {"cmd": "npm test", "expect": "exit0"},
@@ -384,7 +387,9 @@ jobs:
 
 Env knobs: `AL_LOOP_PERMISSION_MODE` (default `acceptEdits` — allowlist your
 build/test commands in `.claude/settings.json`, or set a broader mode for
-sandboxed environments), `AL_LOOP_MAX_TURNS` (default 80).
+sandboxed environments), `AL_LOOP_MAX_TURNS` (default 80),
+`AL_LOOP_PLUGIN_DIR` (the `--plugin-dir` passed to the headless run — a
+path, or `"none"` to rely on a globally installed plugin).
 
 ## Fleet console (standing server)
 
@@ -437,7 +442,8 @@ them) — at most use `@reboot` with a small wrapper script, and prefer
 launchd/systemd above.
 
 The fleet registry lives at `~/.claude/agent-loop/fleet.list`. Set
-`AL_NO_FLEET_REGISTER=1` to keep a repo out of it. As with the single-repo
+`AL_NO_FLEET_REGISTER=1` to keep a repo out of it; set `AL_WATCH_DEBUG=1`
+for request logging (the server is quiet by default). As with the single-repo
 dashboard, the server binds 127.0.0.1 only — it is never reachable from the
 network.
 
@@ -466,10 +472,12 @@ fleets can enable OpenTelemetry (`CLAUDE_CODE_ENABLE_TELEMETRY=1`, metric
 - **Org policy** — commit `.claude/agent-loop/policy.json` (see
   `templates/policy.schema.json`) to set floors the goal author cannot
   lower: `{"tdd": true, "critic": true, "plan_approval": "always",
-  "budget_tokens": 2000000}`. Enforcement lives inside the gates (the
-  effective value is the strictest of policy and goal); doctor D15 reports
-  drift.
-- **Tamper-evident audit** — every journal line carries `actor` (who) and
+  "budget_tokens": 2000000}`. Those four floors are mechanically enforced
+  inside the gates (the effective value is the strictest of policy and
+  goal); an `optimize` floor is advisory only — no gate consults it, and
+  its backstop is doctor D15's WARN on drift.
+- **Tamper-evident audit** — every journal line carries `actor` (who —
+  `AL_ACTOR` when set, else the OS user) and
   `prev` (sha256 of the previous line); doctor D14 verifies the chain, so
   rewritten history is detectable. A redaction filter masks secret-shaped
   strings (tokens, keys, passwords) before anything is journaled.
@@ -480,7 +488,8 @@ fleets can enable OpenTelemetry (`CLAUDE_CODE_ENABLE_TELEMETRY=1`, metric
 - **Budgets & breakers** — `goal.json.budget_tokens` (or the policy's,
   whichever is smaller) hard-stops the loop when `state.tokens_total`
   reaches it; `AL_LOOP_MAX_ERRORS` (default 3) consecutive errored ticks
-  trip a circuit breaker that silences the scheduler until re-armed.
+  trip a circuit breaker that silences the scheduler until re-armed —
+  honored by `al-loop.sh`, `al-fleet`, and `al-watch` alike.
 - **Notifications** — set `AL_LOOP_WEBHOOK` (curl POST) or
   `AL_LOOP_NOTIFY_CMD` (JSON on stdin) and `al-loop.sh` pages you exactly
   once per blocking event: plan awaiting approval, stall pause, iteration

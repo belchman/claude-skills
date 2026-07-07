@@ -425,9 +425,19 @@ EOF
     case "$TTL" in ''|*[!0-9]*) echo "al-state lease-acquire: ttl must be seconds (integer)" >&2; exit 2 ;; esac
     LEASE_DIR="$STATE_DIR/.lease"
     NOW_EPOCH=$(date +%s)
+    HOST_NOW=$(hostname 2>/dev/null || echo unknown)
+    # Owner identity: pid defaults to this al-state process, which exits
+    # immediately (transient — liveness checks against it are meaningless,
+    # so pid_durable:false). A driver that stays alive for the whole run
+    # (al-loop.sh) exports AL_LEASE_PID=$$: the recorded pid is then durable,
+    # which unlocks the dead-owner takeover below and lets the Stop hook
+    # tell a live headless run from an orphaned one.
+    OWN_PID="${AL_LEASE_PID:-$$}"
+    PID_DURABLE=false
+    [ -n "${AL_LEASE_PID:-}" ] && PID_DURABLE=true
     write_owner() {
-      printf '{"pid":%s,"host":"%s","acquired_at":"%s","expires_epoch":%s}\n' \
-        "$$" "$(hostname 2>/dev/null || echo unknown)" "$(now)" "$((NOW_EPOCH + TTL))" > "$LEASE_DIR/owner.json"
+      printf '{"pid":%s,"pid_durable":%s,"host":"%s","session_id":"%s","acquired_at":"%s","expires_epoch":%s}\n' \
+        "$OWN_PID" "$PID_DURABLE" "$HOST_NOW" "${CLAUDE_SESSION_ID:-}" "$(now)" "$((NOW_EPOCH + TTL))" > "$LEASE_DIR/owner.json"
     }
     # mkdir is the atomic primitive: exactly one contender creates it
     if mkdir "$LEASE_DIR" 2>/dev/null; then
@@ -437,14 +447,38 @@ EOF
     else
       EXP=$("$ALJSON" get "$LEASE_DIR/owner.json" expires_epoch 2>/dev/null || echo 0)
       case "$EXP" in ''|*[!0-9]*) EXP=0 ;; esac
+      CUR_PID=$("$ALJSON" get "$LEASE_DIR/owner.json" pid 2>/dev/null || echo "")
+      CUR_HOST=$("$ALJSON" get "$LEASE_DIR/owner.json" host 2>/dev/null || echo "")
+      CUR_DUR=$("$ALJSON" get "$LEASE_DIR/owner.json" pid_durable 2>/dev/null || echo false)
       if [ "$NOW_EPOCH" -gt "$EXP" ]; then
         write_owner
         audit_emit lease_takeover "{\"stale_expires_epoch\":$EXP}"
         echo "al-state: stale lease taken over (ttl ${TTL}s) — takeover journaled"
         fleet_register
+      elif [ "$CUR_DUR" = "true" ] && [ "$CUR_HOST" = "$HOST_NOW" ] && [ "$CUR_PID" = "$OWN_PID" ]; then
+        # re-entrant: the driver that holds the lease (al-loop.sh) spawned
+        # this run, and AL_LEASE_PID was inherited — refresh, don't refuse
+        write_owner
+        echo "al-state: lease refreshed (held by this run's own driver, pid $OWN_PID, ttl ${TTL}s)"
       else
-        echo "al-state: lease held by another session (expires in $((EXP - NOW_EPOCH))s) — refusing to run the loop concurrently" >&2
-        exit 1
+        # dead-owner takeover: a durable owner pid that no longer exists on
+        # THIS host is a crashed/killed run — don't wait out the TTL
+        TAKE=0
+        if [ "$CUR_DUR" = "true" ] && [ "$CUR_HOST" = "$HOST_NOW" ]; then
+          case "$CUR_PID" in
+            ''|*[!0-9]*) : ;;
+            *) kill -0 "$CUR_PID" 2>/dev/null || TAKE=1 ;;
+          esac
+        fi
+        if [ "$TAKE" = "1" ]; then
+          write_owner
+          audit_emit lease_takeover "{\"dead_owner_pid\":$CUR_PID}"
+          echo "al-state: dead-owner lease taken over (pid $CUR_PID is gone, ttl ${TTL}s) — takeover journaled"
+          fleet_register
+        else
+          echo "al-state: lease held by another session (expires in $((EXP - NOW_EPOCH))s) — refusing to run the loop concurrently" >&2
+          exit 1
+        fi
       fi
     fi
     ;;

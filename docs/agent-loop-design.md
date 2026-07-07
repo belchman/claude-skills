@@ -108,7 +108,7 @@ plugins/agent-loop/
 ├── README.md                     # user docs (install, quickstart, concepts)
 ├── skills/
 │   └── agent-loop/
-│       ├── SKILL.md              # router: init|new|run|status|doctor|canonize
+│       ├── SKILL.md              # router: init|new|run|approve|reject|status|doctor|watch|canonize
 │       └── references/
 │           ├── goal-spec.md      # GOAL.md + goal.json schema + examples
 │           ├── loop-contract.md  # iteration shape, verify contract
@@ -117,7 +117,9 @@ plugins/agent-loop/
 ├── agents/
 │   ├── loop-planner.md           # plans against the spec, emits task list
 │   ├── loop-worker.md            # executes one task, minimal context
-│   └── loop-verifier.md          # fresh-context judge, JSON verdict, haiku
+│   ├── loop-verifier.md          # fresh-context judge, JSON verdict, haiku
+│   ├── loop-optimizer.md         # fresh-context, report-only spec/verify proposals
+│   └── loop-critic.md            # cross-model plan pressure-tester
 ├── hooks/
 │   ├── hooks.json                # plugin hook registrations (self-gated scripts)
 │   ├── guard-destructive.sh      # PreToolUse: block rm -rf, force-push, etc.
@@ -139,11 +141,13 @@ plugins/agent-loop/
     ├── al-state                  # state.json CRUD, atomic
     ├── al-hash                   # progress hash
     ├── al-verify                 # run verify[] commands
-    ├── al-doctor                 # D01–D14 harness checks
+    ├── al-doctor                 # D01–D16 harness checks
     ├── al-detect                 # stack probe
     ├── al-detect-skills          # agentic-engineering present?
     ├── al-merge-settings         # deep-merge settings fragment, --dry-run diff
     ├── al-loop.sh                # scheduler wrapper (cron/launchd/systemd/CI)
+    ├── al-fleet                  # one-line-per-repo fleet health probe
+    ├── al-watch                  # local dashboard / machine-wide fleet console
     └── install.sh                # curl-able fallback installer
 ```
 
@@ -156,7 +160,7 @@ What `/agent-loop init` creates **inside a host repo** (all additive):
 └── .claude/
     ├── settings.json             # merged: hooks + minimal allowlist
     ├── hooks/                    # copies of the 3 hooks (repo-owned, editable)
-    ├── agents/                   # loop-planner / loop-worker / loop-verifier
+    ├── agents/                   # loop-planner / -worker / -verifier / -optimizer / -critic
     ├── skills/verify/SKILL.md    # project-specific "how to verify" stub
     └── agent-loop/
         ├── GOAL.md               # active goal contract (via /agent-loop new)
@@ -236,7 +240,9 @@ Design points:
 
 ## 5. Command surface
 
-One skill, six subcommands. `SKILL.md` routes on the first argument
+One skill, nine subcommands
+(`init|new|run|approve|reject|status|doctor|watch|canonize`). `SKILL.md`
+routes on the first argument
 (subcommand routing is not a platform feature; the router is instructions in
 the skill body — [skills.md]).
 
@@ -244,9 +250,12 @@ the skill body — [skills.md]).
 |---|---|
 | `/agent-loop init` | Builds the harness plane. Detects language/framework/test runner, writes the 7-file scaffold (§3), merges settings (diff shown first), registers hooks. Idempotent — safe to re-run; never overwrites user edits. |
 | `/agent-loop new <one-liner>` | Interviews you (done-means, decisions, out-of-scope, verify commands), writes `GOAL.md` + `goal.json`, initializes `state.json`. Refuses if a goal is already `active`. Delegates the interview to `grill-with-docs` and rubric authoring to `write-a-rubric` when the `agentic-engineering` plugin is installed (detect + fallback, §10). |
-| `/agent-loop run [n]` | Executes up to `n` loop iterations (default 1). This is what the scheduler calls headlessly. |
+| `/agent-loop run [n]` | Executes up to `n` loop iterations (default 1); stops at any plan awaiting approval. This is what the scheduler calls headlessly. |
+| `/agent-loop approve` | Approves the pending plan (shown with its assumptions first). |
+| `/agent-loop reject <reason>` | Rejects the pending plan; the next run re-plans around the reason. |
 | `/agent-loop status` | Loop health: current iteration, done-means checklist, last verdict, stall detector reading, context spend. Answers "is the loop converging?" |
-| `/agent-loop doctor` | Harness health: checks D01–D14 (7 files, hook registration, agents, settings scope conflicts, speculative MCP servers, CLAUDE.md line count, empty Decisions, goal.json validity, JSON engine present, audit journal integrity). Exit-code friendly for CI. Answers "is the folder underneath set up?" |
+| `/agent-loop doctor` | Harness health: checks D01–D16 (7 files, hook registration, agents, settings scope conflicts, speculative MCP servers, CLAUDE.md line count, empty Decisions, goal.json validity, JSON engine present, audit journal integrity, policy drift). Exit-code friendly for CI. Answers "is the folder underneath set up?" |
+| `/agent-loop watch` | Live fleet console (`al-watch`): every registered repo at a glance; streams state + journals to a local browser (127.0.0.1 only). |
 | `/agent-loop canonize` | Promotes entries from MEMORY.md `## Candidate canon` to `vault/` — the only write path into the vault. |
 
 `doctor` and `status` are deliberately separate — the post's "harness problems
@@ -268,7 +277,7 @@ Every `/agent-loop run` iteration has this exact shape. It is documented in
 2. PLAN      loop-planner subagent: given the spec, the state, and the
              unchecked done-means items, emit a task list WITH declared
              assumptions:
-               {tasks: [{task, files_hint, parallel}], assumptions: [...]}
+               {tasks: [{task, files_hint, parallel, kind}], assumptions: [...]}
              Planner does NOT write code. The orchestrator validates each
              assumption against the spec, then al-state plan-propose gates:
              default plan_approval "always" ⇒ EVERY plan awaits human
@@ -339,6 +348,16 @@ touches it — optimize proposals live in audit.jsonl and MEMORY.md only.
   "run_in_progress": false,
   "interrupted_at": null,
   "context_tokens_last_iter": 84000,
+  "tokens_total": 512000,
+  "plan": {
+    "status": "none",
+    "tasks": [],
+    "assumptions": [],
+    "proposed_at": null,
+    "approved_at": null,
+    "approved_by": null,
+    "rejected_reason": null
+  },
   "history": [{"iter": 7, "planned": ["..."], "verdict": "fail", "hash": "..."}]
 }
 ```
@@ -468,7 +487,9 @@ only on artifacts it created or the plugin creates.
   `04-stall` (impossible verify → stall detector pauses), `05-fanout`,
   `06-run-refuses-paused`, `07-new-refuses-active`, `08-plan-gate`,
   `09-optimize` (OPTIMIZE tail fires on a recorded-but-not-converged
-  iteration; proposals stay report-only).
+  iteration; proposals stay report-only). Known gap: the fleet tools
+  (`al-fleet`, `al-watch`), `canonize`, and the approve/reject flow have no
+  eval scenarios yet.
 - Isolation rules (hard requirements): every scenario runs in a throwaway
   detached `git worktree` (`--detach` avoids branch-checkout conflicts
   [git-worktree]) removed in a trap; **nothing is ever committed** — scoring
@@ -483,8 +504,10 @@ only on artifacts it created or the plugin creates.
 
 - Multiple concurrently active goals (one active goal per repo; queue in
   `archive/`)
-- A web dashboard (status is CLI/markdown)
-- Cross-repo orchestration
+- ~~A web dashboard~~ — shipped in 0.4.0 (`al-watch`, local-only dashboard
+  + machine-wide fleet console)
+- ~~Cross-repo orchestration~~ — shipped in 0.4.0 (fleet mode: `al-fleet`
+  health probe + the fleet registry / console; no eval coverage yet, see §13)
 - Automatic revert on failed verify (record-and-replan instead)
 
 ## 15. Security threat model

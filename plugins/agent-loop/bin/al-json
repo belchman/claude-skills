@@ -431,11 +431,44 @@ run_jq() {
                  elif ($A|type)=="array" and ($B|type)=="array" then $A + ($B - $A)
                  else $A end;
                m(.[0]; .[1])' "$1" "$2" ;;
-    validate) jq --slurpfile s "$2" '. as $data
-                | ($s[0].required // []) as $req
-                | [$req[] | . as $k | select(($data | has($k)) | not)] as $missing
-                | if ($missing | length) > 0
-                  then ("missing required: " + ($missing | join(","))) | halt_error(1)
+    validate) jq --slurpfile s "$2" '
+                # same draft-07 subset as the python3/node engines: type, enum,
+                # minLength, minimum, required, properties (recursive),
+                # additionalProperties, items — parity is pinned per-engine
+                # by tests/test_agent_loop_bin.sh
+                def typeok($ty; $v):
+                  ($v|type) as $t
+                  | if $ty=="integer" then ($t=="number" and (($v|floor)==$v))
+                    else $t==$ty end;
+                def val($schema; $v; $path):
+                  ( if ($schema|has("type")) then
+                      (if ($schema.type|type)=="array" then $schema.type else [$schema.type] end) as $ts
+                      | if any($ts[]; typeok(.; $v)) then []
+                        else ["\($path): expected type \($schema.type)"] end
+                    else [] end ) as $terrs
+                  | if ($terrs|length) > 0 then $terrs
+                    else
+                      ( if ($schema|has("enum")) and ([$schema.enum[] | select(. == $v)]|length)==0
+                        then ["\($path): not in enum"] else [] end )
+                      + ( if (($v|type)=="string") and ($schema|has("minLength")) and (($v|length) < $schema.minLength)
+                          then ["\($path): shorter than minLength \($schema.minLength)"] else [] end )
+                      + ( if (($v|type)=="number") and ($schema|has("minimum")) and ($v < $schema.minimum)
+                          then ["\($path): \($v) < minimum \($schema.minimum)"] else [] end )
+                      + ( if (($v|type)=="object") then
+                            [ ($schema.required // [])[] | . as $k | select(($v|has($k))|not) | "\($path): missing required key \($k)" ]
+                            + ( ($schema.properties // {}) as $props
+                                | [ $v | to_entries[] | . as $e
+                                    | if ($props|has($e.key)) then val($props[$e.key]; $e.value; "\($path).\($e.key)")
+                                      elif ($schema.additionalProperties == false) then ["\($path): unexpected key \($e.key)"]
+                                      elif (($schema.additionalProperties|type)=="object") then val($schema.additionalProperties; $e.value; "\($path).\($e.key)")
+                                      else [] end ] | add // [] )
+                          else [] end )
+                      + ( if (($v|type)=="array") and (($schema.items|type)=="object") then
+                            [ $v | to_entries[] | val($schema.items; .value; "\($path)[\(.key)]") ] | add // []
+                          else [] end )
+                    end;
+                val($s[0]; .; "$") as $errs
+                | if ($errs|length) > 0 then ($errs | join("; ")) | halt_error(1)
                   else empty end' "$1" >/dev/null ;;
     *)       echo "al-json: unknown subcommand $_cmd" >&2; exit 2 ;;
   esac

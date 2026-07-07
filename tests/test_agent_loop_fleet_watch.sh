@@ -195,6 +195,11 @@ if [ -n "$PORT" ]; then
   BASE="http://127.0.0.1:$PORT"
   cp "$AL_FLEET_REGISTRY" "$SANDBOX/fleet.list.before"
 
+  STATEQ_OUT=$(curl -s -m 5 -G --data-urlencode "repo=$REPO_A" "$BASE/api/state")
+  echo "$STATEQ_OUT" | grep -q 't-fleet-a' \
+    && ok "GET /api/state?repo=A returns A's single-repo snapshot" \
+    || bad "GET /api/state?repo=A returns A's single-repo snapshot (got: $(printf '%s' "$STATEQ_OUT" | head -c 120))"
+
   FLEET_OUT=$(curl -s -m 5 "$BASE/api/fleet")
   printf '%s' "$FLEET_OUT" | python3 -c '
 import json, sys
@@ -326,6 +331,21 @@ if start_fleet "$ACT_LOG" --allow-actions; then
     && ok "B's plan_approved journaled with actor *@al-watch" \
     || bad "B's plan_approved journaled with actor *@al-watch"
 
+  # reject SUCCESS path, repo-addressed (repo A has a fresh awaiting plan)
+  "$BIN/al-state" --state "$STATE_A" plan-propose '{"tasks":[{"task":"t"}],"assumptions":[]}' >/dev/null 2>&1
+  REJOK_CODE=$(curl -s -m 5 -o /dev/null -w '%{http_code}' -X POST \
+    -H 'Content-Type: application/json' -d "{\"repo\":\"$REPO_A\",\"reason\":\"scope creep\"}" "$ABASE/api/reject")
+  [ "$REJOK_CODE" = "200" ] && ok "POST /api/reject {repo: A, reason} -> 200" \
+                            || bad "POST /api/reject {repo: A, reason} -> 200 (got $REJOK_CODE)"
+  [ "$("$BIN/al-state" --state "$STATE_A" get plan.status 2>/dev/null)" = "none" ] \
+    && ok "reject resets A's plan.status to none" || bad "reject resets A's plan.status to none"
+  [ "$("$BIN/al-state" --state "$STATE_A" get plan.rejected_reason 2>/dev/null)" = "scope creep" ] \
+    && ok "reject stores A's rejection reason" || bad "reject stores A's rejection reason"
+  grep '"event":"plan_rejected"' "$REPO_A/.claude/agent-loop/audit.jsonl" 2>/dev/null \
+      | grep -q '"actor":"[^"]*@al-watch"' \
+    && ok "A's plan_rejected journaled with actor *@al-watch" \
+    || bad "A's plan_rejected journaled with actor *@al-watch"
+
   UNREG_CODE=$(curl -s -m 5 -o /dev/null -w '%{http_code}' -X POST \
     -H 'Content-Type: application/json' -d '{"repo":"/tmp"}' "$ABASE/api/approve")
   case "$UNREG_CODE" in
@@ -345,6 +365,10 @@ else
   bad "POST /api/approve {repo: B} -> 200 (no server)"
   bad "approve moves B's plan.status to approved (no server)"
   bad "B's plan_approved journaled with actor *@al-watch (no server)"
+  bad "POST /api/reject {repo: A, reason} -> 200 (no server)"
+  bad "reject resets A's plan.status to none (no server)"
+  bad "reject stores A's rejection reason (no server)"
+  bad "A's plan_rejected journaled with actor *@al-watch (no server)"
   bad "approve for an unregistered repo -> 4xx (no server)"
   bad "approve without Content-Type: application/json -> 4xx (no server)"
 fi

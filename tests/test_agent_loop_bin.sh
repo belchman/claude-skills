@@ -46,6 +46,27 @@ for ENG in python3 node jq; do
   "$BIN/al-json" set "$SANDBOX/arr.json" verify.9.cmd '"x"' >/dev/null 2>&1; check "[$ENG] out-of-range array set fails (no clobber)" $? 1
   echo 'not json' > "$SANDBOX/bad.json"
   "$BIN/al-json" check "$SANDBOX/bad.json" 2>/dev/null; check "[$ENG] check rejects invalid JSON" $? 1
+  # validate + merge parity — validate gates every al-state guard; merge
+  # backs al-merge-settings. An engine-specific bug here corrupts gate
+  # behavior only on machines resolving to that engine, so all three must agree.
+  cat > "$SANDBOX/eng.schema.json" <<'EOF'
+{"type":"object","required":["a","arr"],"additionalProperties":false,"properties":{"a":{"type":"object"},"arr":{"type":"array"},"codes":{"type":"object"}}}
+EOF
+  "$BIN/al-json" validate "$SANDBOX/t.json" "$SANDBOX/eng.schema.json" >/dev/null 2>&1
+  check "[$ENG] validate accepts a conforming doc" $? 0
+  echo '{"a":"not-an-object","arr":[]}' > "$SANDBOX/engbad.json"
+  "$BIN/al-json" validate "$SANDBOX/engbad.json" "$SANDBOX/eng.schema.json" >/dev/null 2>&1 \
+    && bad "[$ENG] validate rejects a type mismatch" || ok "[$ENG] validate rejects a type mismatch"
+  echo '{"arr":[]}' > "$SANDBOX/engmiss.json"
+  "$BIN/al-json" validate "$SANDBOX/engmiss.json" "$SANDBOX/eng.schema.json" >/dev/null 2>&1 \
+    && bad "[$ENG] validate rejects a missing required key" || ok "[$ENG] validate rejects a missing required key"
+  echo '{"keep":1,"list":["a"],"o":{"k":"base"}}' > "$SANDBOX/engbase.json"
+  echo '{"keep":2,"list":["a","b"],"o":{"k":"frag","k2":"new"}}' > "$SANDBOX/engfrag.json"
+  "$BIN/al-json" merge "$SANDBOX/engbase.json" "$SANDBOX/engfrag.json" > "$SANDBOX/engmerged.json" 2>/dev/null
+  check "[$ENG] merge exits 0" $? 0
+  [ "$("$BIN/al-json" get "$SANDBOX/engmerged.json" keep)" = "1" ] && ok "[$ENG] merge keeps BASE scalars" || bad "[$ENG] merge keeps BASE scalars"
+  [ "$("$BIN/al-json" get "$SANDBOX/engmerged.json" o.k2)" = "new" ] && ok "[$ENG] merge recurses into objects" || bad "[$ENG] merge recurses into objects"
+  [ "$("$BIN/al-json" len "$SANDBOX/engmerged.json" list)" = "2" ] && ok "[$ENG] merge set-unions arrays" || bad "[$ENG] merge set-unions arrays"
 done
 unset AL_JSON_ENGINE   # rest of the suite runs on the default engine
 AL_JSON_ENGINE=notreal "$BIN/al-json" engine >/dev/null 2>&1; check "invalid AL_JSON_ENGINE exits 4" $? 4
@@ -76,6 +97,14 @@ EOF
 [ "$("$BIN/al-goal" get id)" = "t-goal" ] && ok "al-goal get" || bad "al-goal get"
 echo '{"id":"x"}' > "$SANDBOX/badgoal.json"
 "$BIN/al-goal" --file "$SANDBOX/badgoal.json" validate >/dev/null 2>&1; check "al-goal rejects invalid spec (exit 3)" $? 3
+# the shipped template must validate against its own schema — drift here
+# breaks every fresh /agent-loop new at init time and nothing else catches it
+sed -e 's/{{GOAL_ID}}/tmpl-check/' \
+    -e 's/{{VERIFY}}/[{"cmd":"true","expect":"exit0"}]/' \
+    -e 's/{{RUBRIC}}/["r1"]/' \
+    "$BIN/../templates/goal.json.tmpl" > "$SANDBOX/tmplgoal.json"
+"$BIN/al-goal" --file "$SANDBOX/tmplgoal.json" validate >/dev/null 2>&1
+check "goal.json.tmpl (defaults substituted) validates against goal.schema.json" $? 0
 
 echo "# al-verify"
 OUT=$("$BIN/al-verify" 2>&1); RC=$?
@@ -519,6 +548,24 @@ printf '{"pid":1,"host":"x","acquired_at":"t","expires_epoch":1}' > "$EBOX/.clau
 grep -q '"event":"lease_takeover"' "$EAUDIT" && ok "lease: takeover journaled" || bad "takeover journal"
 "$BIN/al-state" --state "$ES" lease-release >/dev/null 2>&1
 
+echo "# enterprise: durable lease owners (AL_LEASE_PID)"
+EOWNER="$EBOX/.claude/agent-loop/.lease/owner.json"
+AL_LEASE_PID=$$ "$BIN/al-state" --state "$ES" lease-acquire 60 >/dev/null 2>&1
+check "lease: durable acquire (AL_LEASE_PID)" $? 0
+[ "$("$BIN/al-json" get "$EOWNER" pid_durable)" = "true" ] && ok "lease: owner marked pid_durable" || bad "lease: owner marked pid_durable"
+[ "$("$BIN/al-json" get "$EOWNER" pid)" = "$$" ] && ok "lease: owner pid is the driver pid" || bad "lease: owner pid is the driver pid"
+AL_LEASE_PID=$$ "$BIN/al-state" --state "$ES" lease-acquire 60 >/dev/null 2>&1
+check "lease: re-entrant refresh for the same driver pid" $? 0
+"$BIN/al-state" --state "$ES" lease-acquire 60 >/dev/null 2>&1
+check "lease: live durable owner still refuses other contenders" $? 1
+sh -c ':' & LDEAD=$!
+wait "$LDEAD" 2>/dev/null
+printf '{"pid":%s,"pid_durable":true,"host":"%s","session_id":"","acquired_at":"t","expires_epoch":9999999999}' "$LDEAD" "$(hostname 2>/dev/null || echo unknown)" > "$EOWNER"
+"$BIN/al-state" --state "$ES" lease-acquire 60 >/dev/null 2>&1
+check "lease: dead durable owner taken over before TTL" $? 0
+grep -q '"dead_owner_pid"' "$EAUDIT" && ok "lease: dead-owner takeover journaled" || bad "lease: dead-owner takeover journaled"
+"$BIN/al-state" --state "$ES" lease-release >/dev/null 2>&1
+
 echo "# enterprise: D16 journal growth bound"
 OUT=$(env CLAUDE_PROJECT_DIR="$EBOX" "$BIN/al-doctor" "$EBOX" 2>&1)
 echo "$OUT" | grep -q "CHECK D16 PASS" && ok "D16 passes within bound" || bad "D16 default pass"
@@ -538,6 +585,30 @@ check "fleet: exit 1 when a repo needs a human" $FLEET_RC 1
 echo "$FLEET_OUT" | grep -q "awaiting-approval" && ok "fleet: awaiting repo flagged" || bad "fleet flag"
 echo "$FLEET_OUT" | grep -q " ok" && ok "fleet: healthy repo reads ok" || bad "fleet ok row"
 "$BIN/al-fleet" >/dev/null 2>&1; check "fleet: no repos -> exit 2" $? 2
+
+echo "# enterprise: al-fleet paths with spaces + breaker threshold"
+FSP="$SANDBOX/space repo"
+mkdir -p "$FSP/.claude/agent-loop"
+cp "$EBOX/.claude/agent-loop/goal.json" "$FSP/.claude/agent-loop/goal.json"
+"$BIN/al-state" --state "$FSP/.claude/agent-loop/state.json" init t-ent >/dev/null 2>&1
+SP_OUT=$("$BIN/al-fleet" "$FSP" 2>&1); SP_RC=$?
+check "fleet: spaced path via argv -> exit 0" $SP_RC 0
+echo "$SP_OUT" | grep -q "space repo" && ok "fleet: spaced path row intact" || bad "fleet: spaced path row intact ($SP_OUT)"
+echo "$SP_OUT" | grep -q "no-goal" && bad "fleet: spaced path not shredded into no-goal rows" || ok "fleet: spaced path not shredded into no-goal rows"
+SPE_OUT=$(AL_FLEET_REPOS="$FSP" "$BIN/al-fleet" 2>&1)
+echo "$SPE_OUT" | grep -q "space repo" && ok "fleet: AL_FLEET_REPOS spaced path intact" || bad "fleet: AL_FLEET_REPOS spaced path intact ($SPE_OUT)"
+FH="$SANDBOX/fake-home"
+mkdir -p "$FH/.claude/agent-loop"
+printf '%s\n' "$FSP" > "$FH/.claude/agent-loop/fleet.list"
+SPR_OUT=$(env -u AL_FLEET_REGISTRY HOME="$FH" "$BIN/al-fleet" 2>&1); SPR_RC=$?
+check "fleet: spaced registry line -> exit 0" $SPR_RC 0
+echo "$SPR_OUT" | grep -q "space repo" && ok "fleet: registry line with spaces intact" || bad "fleet: registry line with spaces intact ($SPR_OUT)"
+mkdir -p "$FSP/.claude/agent-loop/logs"
+printf '3' > "$FSP/.claude/agent-loop/logs/consecutive_errors"
+"$BIN/al-fleet" "$FSP" >/dev/null 2>&1; check "fleet: 3 errors trips the default breaker (exit 1)" $? 1
+"$BIN/al-fleet" "$FSP" 2>&1 | grep -q "breaker-open" && ok "fleet: breaker-open flag at default threshold" || bad "fleet: breaker-open flag at default threshold"
+AL_LOOP_MAX_ERRORS=5 "$BIN/al-fleet" "$FSP" >/dev/null 2>&1
+check "fleet: AL_LOOP_MAX_ERRORS=5 keeps 3 errors healthy (exit 0)" $? 0
 rm -rf "$FA" "$FB" "$EBOX"
 
 echo "# al-hash"

@@ -222,7 +222,8 @@ One command builds the Claude Code harness plane (CLAUDE.md stub, merged setting
 /agent-loop new "<goal>"  # interview → GOAL.md + goal.json; refuses to finish without a locked Decision
 /agent-loop run           # one plan→act→verify iteration; plans await human approval
 /agent-loop status        # is the loop converging?
-/agent-loop doctor        # harness health, checks D01–D14 (CI-friendly exit codes)
+/agent-loop doctor        # harness health, checks D01–D16 (CI-friendly exit codes)
+/agent-loop watch         # local dashboard (single repo); bare al-watch = machine-wide fleet console
 ```
 
 Plans are pressure-tested by a *different model* (`loop-critic`, per-goal `critic_model`) and revised up to twice before pausing `awaiting-human` (`/agent-loop approve` / `reject "<reason>"`) — the gate refuses un-critiqued proposals. Passes are re-verified at the state layer, so the loop can't self-certify, and every event lands in an append-only, **hash-chained, secrets-redacted** `audit.jsonl` with actor attribution. TDD is on by default: the state layer must observe the driving test *fail* (`al-state tdd-red`) before implementation work, and observe the same command *pass* before the iteration can record — red→green, enforced, not advised. Enterprise controls ship in the box: org-managed `policy.json` floors the goal author can't lower, an atomic run lease, token budgets, a scheduler circuit breaker, webhook notifications when the loop blocks on a human, and `al-fleet` for multi-repo visibility. Headless ticks via `bin/al-loop.sh` (cron / launchd / systemd / GitHub Actions) cost zero tokens when there's nothing to do.

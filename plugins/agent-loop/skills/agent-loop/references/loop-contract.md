@@ -107,7 +107,7 @@ as failures.
 
 ## RECORD
 
-- First, always: `al-state record-iter '<verdict>' '<planned>'` — updates
+- First, always: `al-state record-iter '<verdict>'` — updates
   iteration/hash/history, clears `run_in_progress`, increments `stall_count`
   when the progress hash didn't move, and auto-pauses at 2 consecutive
   no-progress iterations. **The verify gate is here, not in prose**: for a
@@ -132,8 +132,9 @@ as failures.
 - Fail: record, don't revert. The verbatim failure is the next PLAN's most
   valuable input. Automatic reverts destroy the evidence.
 - `al-state set` refuses the verdict-ledger paths (iteration, done_means,
-  last_verdict, history, progress_hash) and journals the attempt — those
-  fields only move through the gated commands above. Operational fields
+  last_verdict, history, progress_hash, plan — including any subpath of
+  them) and journals the attempt — those fields only move through the gated
+  commands above. Operational fields
   (paused_by_stall, run_in_progress, stall_report, interrupted_at,
   context_tokens_last_iter) stay settable for the human-remedy and backfill
   paths.
@@ -181,6 +182,13 @@ An optimizer that returns garbage is skipped (`optimize_skipped` journaled)
 | vault/ | `/agent-loop canonize` only |
 | repo code | loop-worker only |
 
+The GOAL.md/goal.json/state.json guard (`guard-destructive.sh`) applies
+while a run is in progress and covers raw `al-json` writes to goal/state as
+well as Edit/Write — mid-run mutations must go through `al-state`. It has
+one documented escape hatch for humans: set `GOAL_STATE_WRITE=1` to make an
+intentional mid-run edit to the contract or state. The loop must never set
+it — a human override, not a loop affordance.
+
 ## The audit trail
 
 Two layers, deliberately different:
@@ -189,8 +197,8 @@ Two layers, deliberately different:
   → task strings, verdicts → pass/failures) so the schema stays strict and
   the loop stays honest with itself.
 - **audit.jsonl** — the record. Append-only JSONL; one object per event with
-  `event`, `at`, `goal_id` plus the RAW payload: `goal_init`, `plan` (full
-  planner JSON), `worker_report` (files changed, self-assessment),
+  `event`, `at`, `goal_id` plus the RAW payload: `goal_init`,
+  `worker_report` (files changed, self-assessment),
   `iteration` (full verdict incl. evidence + raw plan + the al-verify
   output record-iter itself observed), `tick`, `memory_log`/`memory_canon`,
   `plan_proposed` (raw tasks + assumptions + the gate's decision),

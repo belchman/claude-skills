@@ -14,11 +14,16 @@ set -u
 BIN_DIR=$(dirname "$0")
 ALJSON="$BIN_DIR/al-json"
 
-REPOS="$*"
-if [ -z "$REPOS" ] && [ -n "${AL_FLEET_REPOS:-}" ]; then
-  REPOS=$(printf '%s' "$AL_FLEET_REPOS" | tr ':' ' ')
-fi
-if [ -z "$REPOS" ] && [ -z "${AL_FLEET_REGISTRY:-}" ]; then
+# Repo enumeration is newline-delimited end to end (argv, colon-split env,
+# registry lines) so paths containing spaces survive — the registry is one
+# path per line and word-splitting it would shred them.
+REPO_LIST=$(mktemp)
+trap 'rm -f "$REPO_LIST"' EXIT
+if [ "$#" -gt 0 ]; then
+  printf '%s\n' "$@" > "$REPO_LIST"
+elif [ -n "${AL_FLEET_REPOS:-}" ]; then
+  printf '%s\n' "$AL_FLEET_REPOS" | tr ':' '\n' > "$REPO_LIST"
+elif [ -z "${AL_FLEET_REGISTRY:-}" ]; then
   # fall back to the machine-wide fleet registry at its DEFAULT path
   # (~/.claude/agent-loop/fleet.list, appended by al-state init/lease-acquire
   # and al-loop.sh). Reader-side hygiene only: keep existing-dir lines, never
@@ -30,18 +35,21 @@ if [ -z "$REPOS" ] && [ -z "${AL_FLEET_REGISTRY:-}" ]; then
   REG="${HOME:-}/.claude/agent-loop/fleet.list"
   if [ -f "$REG" ]; then
     while IFS= read -r _line; do
-      [ -n "$_line" ] && [ -d "$_line" ] && REPOS="$REPOS $_line"
-    done < "$REG"
-    REPOS="${REPOS# }"
+      [ -n "$_line" ] && [ -d "$_line" ] && printf '%s\n' "$_line"
+    done < "$REG" > "$REPO_LIST"
   fi
 fi
-[ -n "$REPOS" ] || { echo "al-fleet: no repos (args, AL_FLEET_REPOS=path1:path2, or ~/.claude/agent-loop/fleet.list)" >&2; exit 2; }
+[ -s "$REPO_LIST" ] || { echo "al-fleet: no repos (args, AL_FLEET_REPOS=path1:path2, or ~/.claude/agent-loop/fleet.list)" >&2; exit 2; }
+
+# circuit-breaker threshold: same knob the scheduler (al-loop.sh) honors
+MAXERR="${AL_LOOP_MAX_ERRORS:-3}"
+case "$MAXERR" in ''|*[!0-9]*) MAXERR=3 ;; esac
 
 NEEDS_HUMAN=0
 printf '%-30s %-28s %-9s %-8s %-15s %-22s %-10s %s\n' \
   "REPO" "GOAL" "STATUS" "ITER" "PLAN" "FLAGS" "TOKENS" "JOURNAL"
 
-for repo in $REPOS; do
+while IFS= read -r repo; do
   AL="$repo/.claude/agent-loop"
   NAME=$(basename "$repo")
   if [ ! -f "$AL/goal.json" ]; then
@@ -71,13 +79,13 @@ for repo in $REPOS; do
   if [ -f "$ERRF" ]; then
     ERRS=$(cat "$ERRF" 2>/dev/null || echo 0)
     case "$ERRS" in ''|*[!0-9]*) ERRS=0 ;; esac
-    [ "$ERRS" -ge 3 ] && FLAGS="$FLAGS breaker-open" && NEEDS_HUMAN=1
+    [ "$ERRS" -ge "$MAXERR" ] && FLAGS="$FLAGS breaker-open" && NEEDS_HUMAN=1
   fi
   JSZ="-"
   [ -f "$AL/audit.jsonl" ] && JSZ="$(wc -c < "$AL/audit.jsonl" | tr -d ' ')B"
   [ -n "$FLAGS" ] || FLAGS=" ok"
   printf '%-30s %-28s %-9s %-8s %-15s %-22s %-10s %s\n' \
     "$NAME" "$GID" "$GST" "$ITER/$MAXI" "$PLAN" "${FLAGS# }" "$TT" "$JSZ"
-done
+done < "$REPO_LIST"
 
 exit "$NEEDS_HUMAN"

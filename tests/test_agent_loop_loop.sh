@@ -164,6 +164,38 @@ CLAUDE_STUB_OUTPUT="$GOOD_RESULT" "$BIN/al-loop.sh" "$SANDBOX" >/dev/null 2>&1
 [ "$(calls)" = "1" ] && ok "re-armed after counter removal" || bad "re-arm"
 [ -f "$AL/logs/consecutive_errors" ] && bad "success must clear the counter" || ok "success clears the counter"
 
+echo "# al-loop.sh run lease (harness-level mutual exclusion)"
+HOSTN=$(hostname 2>/dev/null || echo unknown)
+# a LIVE durable owner (this test process) blocks the whole tick
+reset_calls
+seed_goal active; seed_state 1
+rm -rf "$AL/.lease"; mkdir -p "$AL/.lease"
+printf '{"pid":%s,"pid_durable":true,"host":"%s","session_id":"","acquired_at":"t","expires_epoch":9999999999}' "$$" "$HOSTN" > "$AL/.lease/owner.json"
+CLAUDE_STUB_OUTPUT="$GOOD_RESULT" "$BIN/al-loop.sh" "$SANDBOX" >/dev/null 2>&1
+check "live lease held elsewhere -> exit 0 (skipped tick)" $? 0
+[ "$(calls)" = "0" ] && ok "live lease -> no claude call (no double-run)" || bad "live lease calls ($(calls))"
+# a DEAD durable owner (crashed tick) is taken over; the tick proceeds and
+# releases the lease on exit
+reset_calls
+sh -c ':' & LDEAD=$!
+wait "$LDEAD" 2>/dev/null
+printf '{"pid":%s,"pid_durable":true,"host":"%s","session_id":"","acquired_at":"t","expires_epoch":9999999999}' "$LDEAD" "$HOSTN" > "$AL/.lease/owner.json"
+CLAUDE_STUB_OUTPUT="$GOOD_RESULT" "$BIN/al-loop.sh" "$SANDBOX" >/dev/null 2>&1
+check "dead-owner lease -> tick proceeds" $? 0
+[ "$(calls)" = "1" ] && ok "dead-owner lease taken over -> claude ran" || bad "dead-owner calls ($(calls))"
+[ -f "$AL/.lease/owner.json" ] && bad "lease released after tick" || ok "lease released after tick"
+grep -q '"event":"lease_takeover"' "$AL/audit.jsonl" 2>/dev/null && ok "dead-owner takeover journaled" || bad "dead-owner takeover journaled"
+rm -rf "$AL/.lease"
+
+echo "# al-loop.sh post-run backstop (inner session died mid-iteration)"
+reset_calls
+seed_goal active; seed_state 1
+"$BIN/al-json" set "$AL/state.json" run_in_progress true >/dev/null
+CLAUDE_STUB_OUTPUT="$GOOD_RESULT" "$BIN/al-loop.sh" "$SANDBOX" >/dev/null 2>&1
+check "backstop tick exits 0" $? 0
+[ "$("$BIN/al-json" get "$AL/state.json" run_in_progress)" = "false" ] && ok "phantom run flag cleared after tick" || bad "phantom run flag cleared after tick"
+[ "$("$BIN/al-json" get "$AL/state.json" interrupted_at)" != "null" ] && ok "interrupted_at stamped by backstop" || bad "interrupted_at stamped by backstop"
+
 echo
 echo "loop tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

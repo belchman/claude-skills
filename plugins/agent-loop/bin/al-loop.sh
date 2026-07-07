@@ -152,8 +152,33 @@ if [ -f "$STATE" ]; then
     exit 0
   fi
 fi
+# Run lease: the tick itself holds the repo's run lease for its whole
+# lifetime, so overlapping cron/launchd ticks are mutually exclusive at the
+# harness level — not just by model behavior inside the skill. AL_LEASE_PID
+# marks the recorded owner pid as durable (this process, alive for the whole
+# tick) and is inherited by the claude run below, so the skill's own
+# lease-acquire becomes a re-entrant refresh instead of a self-collision.
+# A crashed previous tick leaves a dead durable owner, which lease-acquire
+# takes over immediately (no TTL wait).
+AL_LEASE_PID=$$
+export AL_LEASE_PID
+HAVE_LEASE=0
+release_lease() {
+  [ "${HAVE_LEASE:-0}" = "1" ] || return 0
+  "$BIN_DIR/al-state" --state "$STATE" lease-release >/dev/null 2>&1 || true
+  HAVE_LEASE=0
+}
+if [ -f "$STATE" ]; then
+  if "$BIN_DIR/al-state" --state "$STATE" lease-acquire "${AL_LOOP_LEASE_TTL:-3600}" >/dev/null 2>&1; then
+    HAVE_LEASE=1
+  else
+    echo "al-loop: another session holds the run lease — skipping tick" >&2
+    exit 0
+  fi
+fi
+
 OUT=$(mktemp)
-trap 'rm -f "$OUT"' EXIT
+trap 'rm -f "$OUT"; release_lease' EXIT
 
 # the plugin providing /agent-loop is this script's own parent dir — pass it
 # explicitly so the tick works whether or not the plugin is installed
@@ -213,5 +238,12 @@ if [ -f "$STATE" ]; then
   TT=$("$ALJSON" get "$STATE" tokens_total 2>/dev/null || echo 0)
   case "$TT" in ''|*[!0-9]*) TT=0;; esac
   [ "$TOTAL" -gt 0 ] && "$ALJSON" set "$STATE" tokens_total "$((TT + TOTAL))" >/dev/null 2>&1 || true
+fi
+# post-run backstop: if the inner session died mid-iteration its Stop hook
+# may never have fired — clear the run flag here so the next tick isn't
+# stuck behind a phantom run (the lease releases via the EXIT trap)
+if [ -f "$STATE" ] && [ "$("$ALJSON" get "$STATE" run_in_progress 2>/dev/null || echo false)" = "true" ]; then
+  "$ALJSON" set "$STATE" interrupted_at "\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"" >/dev/null 2>&1 || true
+  "$ALJSON" set "$STATE" run_in_progress false >/dev/null 2>&1 || true
 fi
 echo "al-loop: iteration done (context≈${TOTAL:-?} tokens): $(printf '%s' "$RESULT" | head -c 200)"

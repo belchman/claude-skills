@@ -1,13 +1,17 @@
 #!/bin/sh
 # guard-destructive.sh — agent-loop PreToolUse hook (matcher: Bash|Edit|Write).
 # Denies (exit 2 + permissionDecision "deny"):
-#   - recursive+force rm on root/home/cwd paths (any flag order),
-#     rm --no-preserve-root, git clean -f*, find -delete,
-#     git push --force/-f (--force-with-lease passes), git reset --hard
+#   - recursive+force rm (any flag order) on any absolute path, ~/$HOME
+#     paths, parent dirs (..), the cwd (. ./ ./*) or a bare glob (*) —
+#     quoted targets included; rm --no-preserve-root, git clean -f*,
+#     find -delete, git push --force/-f (--force-with-lease passes),
+#     git reset --hard
 #   - git commit / git push entirely when AGENT_LOOP_EVAL=1 (eval no-commit rule)
 #   - Edit/Write to the goal contract (GOAL.md/goal.json/state.json) while a
 #     run is in progress — the loop may not rewrite its own contract; state
-#     changes go through al-state
+#     changes go through al-state. Raw `al-json set/append/del/merge` on the
+#     same files is the equivalent Bash-shaped bypass and is denied mid-run
+#     too. Human override for both: GOAL_STATE_WRITE=1.
 # Self-gates: exits 0 instantly when the repo has no .claude/agent-loop/, or
 # when a repo-owned copy of this script exists (repo copy wins; hooks from
 # different paths are NOT deduplicated by Claude Code — dedup is by identical
@@ -64,11 +68,21 @@ else
 fi
 
 has() { printf '%s' "$CMD" | grep -Eq "$1"; }
+run_active() {
+  [ -f "$AL_DIR/state.json" ] && grep -q '"run_in_progress" *: *true' "$AL_DIR/state.json"
+}
+
+# rm target arm: absolute paths (incl. /* and /etc/x), ~..., $HOME..., parent
+# dirs (../...), cwd (. ./ ./*), bare glob — allowing quote-wrapped targets
+# ("$HOME/x", '/etc/x'). Deliberately NOT matched: repo-relative subpaths
+# (build/, ./build) — those are the loop's legitimate workspace.
+RM_TGT="([[:space:]]|[\"'=])((/|~|\\\$HOME|\\.\\.)[^[:space:]\"']*|\\./?|\\./\\*|\\*)[\"']*([[:space:]]|\$)"
 
 case "$TOOL" in
   Bash)
     # rm with recursive+force in ANY flag order (-rf, -fr, -r -f, -Rf,
-    # --recursive --force) targeting /, ~, $HOME, ., .., *, ./ or ./*
+    # --recursive --force) targeting an absolute path, ~, $HOME, ., ..,
+    # *, ./ or ./* — see RM_TGT above for the exact target arm
     if has '(^|[;&|[:space:]])rm[[:space:]]'; then
       if has '(^|[[:space:]])--no-preserve-root([[:space:]]|$)'; then
         deny "agent-loop guard: rm --no-preserve-root is blocked"
@@ -76,9 +90,18 @@ case "$TOOL" in
       if { has '(^|[[:space:]])-[[:alnum:]]*([rR][[:alnum:]]*f|f[[:alnum:]]*[rR])' || \
            { has '(^|[[:space:]])(-[[:alnum:]]*[rR]|--recursive)([[:space:]]|$)' && \
              has '(^|[[:space:]])(-[[:alnum:]]*f|--force)([[:space:]]|$)'; }; } && \
-         has '[[:space:]](/|~[^[:space:]]*|\$HOME[^[:space:]]*|\.|\.\.|\./|\./\*|\*)([[:space:]]|$)'; then
-        deny "agent-loop guard: recursive+force rm on a root/home/cwd path is blocked"
+         has "$RM_TGT"; then
+        deny "agent-loop guard: recursive+force rm on an absolute/home/parent/cwd path is blocked"
       fi
+    fi
+    # Raw al-json writes to the loop's contract files are the Bash-shaped
+    # bypass of every al-state gate — deny them mid-run exactly like
+    # Edit/Write on the same files (al-state itself is not affected: hooks
+    # fire on the model's Bash call, not on al-state's internal subprocesses)
+    if has '(^|[;&|[:space:]/])al-json[[:space:]]+(set|append|del|merge)[[:space:]]' && \
+       has 'agent-loop/(GOAL\.md|goal\.json|state\.json)' && \
+       run_active && [ "${GOAL_STATE_WRITE:-0}" != "1" ]; then
+      deny "agent-loop guard: raw al-json writes to goal/state mid-run are blocked — use al-state"
     fi
     if has '(^|[;&|[:space:]])git[[:space:]]+clean[[:space:]][^;|&]*-[[:alnum:]]*f'; then
       deny "agent-loop guard: git clean -f is blocked"
@@ -106,11 +129,7 @@ case "$TOOL" in
   Edit|Write)
     case "$FILE" in
       */.claude/agent-loop/GOAL.md|*/.claude/agent-loop/goal.json|*/.claude/agent-loop/state.json)
-        RUNNING=false
-        if [ -f "$AL_DIR/state.json" ]; then
-          grep -q '"run_in_progress" *: *true' "$AL_DIR/state.json" && RUNNING=true
-        fi
-        if [ "$RUNNING" = "true" ] && [ "${GOAL_STATE_WRITE:-0}" != "1" ]; then
+        if run_active && [ "${GOAL_STATE_WRITE:-0}" != "1" ]; then
           deny "agent-loop guard: the loop may not edit its own contract/state mid-run — use al-state"
         fi
         ;;

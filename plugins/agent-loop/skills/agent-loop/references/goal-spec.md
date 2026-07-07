@@ -13,7 +13,10 @@ a human, stored on disk, re-read from disk at the top of every iteration
 
 Both live in `.claude/agent-loop/`. Both are **human-owned**: the loop may
 tick checkboxes in GOAL.md (via `al-state tick` only) but may never otherwise
-edit either file while a run is active — `guard-destructive.sh` enforces this.
+edit either file while a run is active — `guard-destructive.sh` enforces this,
+covering raw `al-json` writes to goal/state as well as Edit/Write. One
+documented escape hatch exists for humans: set `GOAL_STATE_WRITE=1` to make
+an intentional mid-run edit; the loop must never set it.
 
 ## GOAL.md sections
 
@@ -36,6 +39,7 @@ edit either file while a run is active — `guard-destructive.sh` enforces this.
 | `verify` | `[{cmd, expect: "exit0"}]` | Deterministic layer of the verify contract. ALL must exit 0. Empty ⇒ doctor D07 warns. |
 | `verifier_rubric` | `[string]` | Judgment layer: criteria the fresh-context verifier subagent checks that exit codes can't. |
 | `deep_verify` | bool (optional) | When true and the `agentic-engineering` plugin is installed, an `adversarial-review` report-only pass is added after the verifier. |
+| `plan_approval` | `"always"\|"assumptions"` (optional; default `"always"`) | Drives the plan-approval gate in `al-state plan-propose`. `"always"`: every plan pauses as `awaiting-human`. `"assumptions"`: auto-approve only when zero assumptions survived, at least one iteration is recorded, and no rejection is pending. Org policy `"always"` overrides. |
 | `optimize` | bool (optional) | Absent/true: each iteration ends with an OPTIMIZE pass — the `loop-optimizer` agent proposes spec Decisions and `verify[]` entries (report-only; humans apply) and feeds planner guidance into MEMORY.md. `false`: skip the pass entirely. |
 | `tdd` | bool (optional; the `new` template defaults it to `true`) | TDD enforced at the state layer: plans declare task `kind` with tests before the impl they drive (`plan-propose` refuses violations); `al-state tdd-red` must observe each driving test FAIL before impl work; `record-iter` refuses a pass with impl tasks unless a red was journaled this iteration and every red command now exits 0. Absent/`false`: gates off. |
 | `critic` | bool (optional; the `new` template defaults it to `true`) | Every plan is pressure-tested before the human sees it: the runner dispatches `loop-critic` and journals its verdict as a `plan_critique` event; `plan-propose` refuses proposals with no critique on record this iteration. `revise` verdicts loop back to the planner (max 2 rounds); unresolved blockers travel to the human. Absent/`false`: gate off. |
@@ -46,11 +50,12 @@ edit either file while a run is active — `guard-destructive.sh` enforces this.
 
 `AL_DIR/policy.json` (optional; validated against `policy.schema.json`) is
 **org-managed and commit-worthy** — it sets floors the goal author cannot
-lower. `tdd`/`critic`/`optimize: true` force those gates on regardless of
-goal.json; `plan_approval: "always"` defeats the auto-approve path;
-`budget_tokens` caps spend when smaller than the goal's. Enforcement lives
-in the gates themselves (`al-state` computes the effective, strictest
-value), not in prose; doctor D15 reports misalignment.
+lower. `tdd`/`critic: true` force those gates on regardless of goal.json;
+`plan_approval: "always"` defeats the auto-approve path; `budget_tokens`
+caps spend when smaller than the goal's. Those four are enforced in the
+gates themselves (`al-state` computes the effective, strictest value), not
+in prose. An `optimize` floor is advisory only — no gate consults it; its
+backstop is doctor D15, which WARNs on drift.
 
 ## Worked example 1 — feature
 
@@ -169,7 +174,9 @@ Migrate services/billing from requests to httpx (async-ready).
 
 ## Authoring rules for `/agent-loop new`
 
-1. Refuse to run if an `active` goal already exists (archive or pause first).
+1. Refuse to run if the existing goal is `active` or `paused` — archive
+   first (or mark it done/abandoned); a paused goal still blocks `new`
+   (a human intentionally halted it, and clobbering it loses the goal).
 2. Interview order: goal → done-means (with slugs) → **decisions (must
    capture at least one before anything is written)** → out-of-scope →
    verify commands (offer `al-detect` findings and the repo's verify skill as
