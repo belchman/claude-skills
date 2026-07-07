@@ -609,6 +609,39 @@ printf '3' > "$FSP/.claude/agent-loop/logs/consecutive_errors"
 "$BIN/al-fleet" "$FSP" 2>&1 | grep -q "breaker-open" && ok "fleet: breaker-open flag at default threshold" || bad "fleet: breaker-open flag at default threshold"
 AL_LOOP_MAX_ERRORS=5 "$BIN/al-fleet" "$FSP" >/dev/null 2>&1
 check "fleet: AL_LOOP_MAX_ERRORS=5 keeps 3 errors healthy (exit 0)" $? 0
+
+echo "# enterprise: al-fleet --prune (the registry's only GC)"
+PRREG="$SANDBOX/prune.list"
+printf '%s\n%s\n\n' "$FSP" "$SANDBOX/never existed here" > "$PRREG"
+AL_FLEET_REGISTRY="$PRREG" "$BIN/al-fleet" --prune >/dev/null 2>&1
+check "fleet: --prune exits 0" $? 0
+grep -qxF "$FSP" "$PRREG" && ok "prune keeps live repos (spaced path intact)" || bad "prune keeps live repos"
+grep -q "never existed" "$PRREG" && bad "prune drops dead paths" || ok "prune drops dead paths"
+[ "$(grep -c . "$PRREG")" = "1" ] && ok "prune leaves exactly the live lines" || bad "prune line count"
+AL_FLEET_REGISTRY="$SANDBOX/absent.list" "$BIN/al-fleet" --prune >/dev/null 2>&1
+check "fleet: --prune with no registry -> exit 0 (nothing to do)" $? 0
+
+echo "# enterprise: staged multi-field writes (approve/reject/pause-stall)"
+ATOM="$SANDBOX/atom-box"
+ASTATE="$ATOM/.claude/agent-loop/state.json"
+mkdir -p "$ATOM/.claude/agent-loop"
+cat > "$ATOM/.claude/agent-loop/goal.json" <<'EOF'
+{"id":"t-atom","status":"active","max_iterations":5,"context_budget":50000,"verify":[{"cmd":"true","expect":"exit0"}],"verifier_rubric":["r"]}
+EOF
+"$BIN/al-state" --state "$ASTATE" init t-atom >/dev/null 2>&1
+"$BIN/al-state" --state "$ASTATE" plan-propose '{"tasks":[{"task":"t"}],"assumptions":[]}' >/dev/null 2>&1
+"$BIN/al-state" --state "$ASTATE" plan-reject "not yet" >/dev/null 2>&1
+check "staged plan-reject exits 0" $? 0
+[ "$("$BIN/al-state" --state "$ASTATE" get plan.rejected_reason)" = "not yet" ] && ok "reject fields all landed" || bad "reject fields all landed"
+"$BIN/al-state" --state "$ASTATE" plan-propose '{"tasks":[{"task":"t"}],"assumptions":[]}' >/dev/null 2>&1
+"$BIN/al-state" --state "$ASTATE" plan-approve >/dev/null 2>&1
+check "staged plan-approve exits 0" $? 0
+[ "$("$BIN/al-state" --state "$ASTATE" get plan.approved_by)" = "human" ] && ok "approve fields all landed" || bad "approve fields all landed"
+"$BIN/al-state" --state "$ASTATE" pause-stall "test stall" >/dev/null 2>&1
+check "staged pause-stall exits 0" $? 0
+[ "$("$BIN/al-state" --state "$ASTATE" get paused_by_stall)" = "true" ] && ok "pause-stall fields all landed" || bad "pause-stall fields all landed"
+ls "$ASTATE".work.* >/dev/null 2>&1 && bad "no staged work files left behind" || ok "no staged work files left behind"
+"$BIN/al-state" --state "$ASTATE" validate >/dev/null 2>&1; check "state still valid after staged writes" $? 0
 rm -rf "$FA" "$FB" "$EBOX"
 
 echo "# al-hash"
@@ -698,11 +731,94 @@ printf 'services:\n  app:\n    image: x\n' > "$DC4/compose.yaml"
 D7=$("$BIN/al-detect" "$DC4")
 echo "$D7" | grep -q '"test_cmd": *"pytest"' && ok "app-only compose leaves language guess intact" || bad "no false compose override"
 echo "$D7" | grep -q '"compose_file": *"compose.yaml"' && ok "app-only compose still reported as evidence" || bad "compose evidence"
-rm -rf "$DETECT_DIR" "$EMPTY_DIR" "$DC_DIR" "$DC2" "$DC3" "$DC4"
+
+# JS/TS branch: package manager, scripts, prettier config
+JS_DIR=$(mktemp -d)
+printf '{"name":"x","scripts":{"test":"vitest run","lint":"eslint ."}}' > "$JS_DIR/package.json"
+D8=$("$BIN/al-detect" "$JS_DIR")
+echo "$D8" | grep -q '"language": *"javascript/typescript"' && ok "detects js/ts" || bad "detect js/ts"
+echo "$D8" | grep -q '"test_cmd": *"npm test"' && ok "scripts.test -> npm test" || bad "npm test (got: $D8)"
+echo "$D8" | grep -q '"lint_cmd": *"npm run lint"' && ok "scripts.lint -> npm run lint" || bad "npm lint"
+echo "$D8" | grep -q '"format_cmd": *null' && ok "no format script/config -> null (never fabricates)" || bad "format null"
+touch "$JS_DIR/pnpm-lock.yaml"
+"$BIN/al-detect" "$JS_DIR" | grep -q '"test_cmd": *"pnpm test"' && ok "pnpm lockfile switches the package manager" || bad "pnpm switch"
+rm "$JS_DIR/pnpm-lock.yaml"; touch "$JS_DIR/yarn.lock"
+"$BIN/al-detect" "$JS_DIR" | grep -q '"test_cmd": *"yarn test"' && ok "yarn lockfile switches the package manager" || bad "yarn switch"
+printf '{}' > "$JS_DIR/.prettierrc"
+"$BIN/al-detect" "$JS_DIR" | grep -q '"format_cmd": *"npx prettier --write"' && ok "prettier config -> prettier format" || bad "prettier format"
+
+# rust branch
+RS_DIR=$(mktemp -d)
+printf '[package]\nname = "x"\n' > "$RS_DIR/Cargo.toml"
+D9=$("$BIN/al-detect" "$RS_DIR")
+echo "$D9" | grep -q '"language": *"rust"' && ok "detects rust" || bad "detect rust"
+echo "$D9" | grep -q '"test_cmd": *"cargo test"' && ok "rust -> cargo test" || bad "cargo test"
+echo "$D9" | grep -q '"lint_cmd": *"cargo clippy -- -D warnings"' && ok "rust -> clippy lint" || bad "clippy"
+
+# django branch (no pytest markers, no tests/ dir)
+DJ_DIR=$(mktemp -d)
+printf 'django\n' > "$DJ_DIR/requirements.txt"
+touch "$DJ_DIR/manage.py"
+D10=$("$BIN/al-detect" "$DJ_DIR")
+echo "$D10" | grep -q '"language": *"python"' && ok "django repo detected as python" || bad "django python"
+echo "$D10" | grep -q '"test_cmd": *"python manage.py test"' && ok "manage.py -> django test runner" || bad "django test (got: $D10)"
+
+# ruff via pyproject
+RF_DIR=$(mktemp -d)
+printf '[tool.pytest.ini_options]\n[tool.ruff]\n' > "$RF_DIR/pyproject.toml"
+D11=$("$BIN/al-detect" "$RF_DIR")
+echo "$D11" | grep -q '"lint_cmd": *"ruff check ."' && ok "pyproject [tool.ruff] -> ruff lint" || bad "ruff lint"
+echo "$D11" | grep -q '"format_cmd": *"ruff format ."' && ok "pyproject [tool.ruff] -> ruff format" || bad "ruff format"
+
+# pylint rcfile
+PL_DIR=$(mktemp -d)
+printf 'flask\n' > "$PL_DIR/requirements.txt"
+printf '[MASTER]\n' > "$PL_DIR/.pylintrc"
+D12=$("$BIN/al-detect" "$PL_DIR")
+echo "$D12" | grep -q '"lint_cmd": *"pylint --rcfile=.pylintrc"' && ok ".pylintrc -> pylint lint cmd" || bad "pylint rc (got: $D12)"
+rm -rf "$DETECT_DIR" "$EMPTY_DIR" "$DC_DIR" "$DC2" "$DC3" "$DC4" "$JS_DIR" "$RS_DIR" "$DJ_DIR" "$RF_DIR" "$PL_DIR"
 
 echo "# al-detect-skills"
 AGENT_LOOP_SKILLS=1 "$BIN/al-detect-skills" | grep -q '"agentic_engineering": true' && ok "env override true" || bad "skills override true"
 AGENT_LOOP_SKILLS=0 "$BIN/al-detect-skills" | grep -q '"agentic_engineering": false' && ok "env override false" || bad "skills override false"
+# the real filesystem probe (what production actually runs — the env
+# overrides above bypass it entirely)
+SKROOT="$SANDBOX/skills-cfg"
+mkdir -p "$SKROOT/plugins/marketplace/agentic-engineering/.claude-plugin"
+printf '{}' > "$SKROOT/plugins/marketplace/agentic-engineering/.claude-plugin/plugin.json"
+env -u AGENT_LOOP_SKILLS CLAUDE_CONFIG_DIR="$SKROOT" HOME="$SANDBOX/no-such-home" "$BIN/al-detect-skills" \
+  | grep -q '"agentic_engineering": true' && ok "probe finds an installed agentic-engineering" || bad "probe finds installed plugin"
+env -u AGENT_LOOP_SKILLS CLAUDE_CONFIG_DIR="$SKROOT" HOME="$SANDBOX/no-such-home" "$BIN/al-detect-skills" \
+  | grep -q '"via": *"[^"]*agentic-engineering"' && ok "probe reports the evidence path" || bad "probe evidence path"
+env -u AGENT_LOOP_SKILLS CLAUDE_CONFIG_DIR="$SANDBOX/empty-cfg" HOME="$SANDBOX/no-such-home" "$BIN/al-detect-skills" \
+  | grep -q '"agentic_engineering": false' && ok "probe reports absent without fabricating" || bad "probe absent"
+# a bare dir without a plugin manifest must NOT count
+mkdir -p "$SANDBOX/half-cfg/plugins/agentic-engineering"
+env -u AGENT_LOOP_SKILLS CLAUDE_CONFIG_DIR="$SANDBOX/half-cfg" HOME="$SANDBOX/no-such-home" "$BIN/al-detect-skills" \
+  | grep -q '"agentic_engineering": false' && ok "dir without plugin.json does not count" || bad "manifest-less dir rejected"
+
+echo "# install.sh (fallback installer)"
+INST_CFG="$SANDBOX/install-cfg"
+mkdir -p "$INST_CFG"
+CLAUDE_CONFIG_DIR="$INST_CFG" sh "$BIN/install.sh" >/dev/null 2>&1
+check "install.sh exits 0" $? 0
+[ -x "$INST_CFG/plugins/agent-loop/bin/al-state" ] && ok "installs executable bin/" || bad "installs executable bin/"
+[ -f "$INST_CFG/plugins/agent-loop/.claude-plugin/plugin.json" ] && ok "installs the plugin manifest" || bad "installs the plugin manifest"
+[ -f "$INST_CFG/plugins/agent-loop/skills/agent-loop/SKILL.md" ] && ok "installs the skill" || bad "installs the skill"
+[ -f "$INST_CFG/plugins/agent-loop/hooks/hooks.json" ] && ok "installs hooks" || bad "installs hooks"
+[ -f "$INST_CFG/plugins/agent-loop/templates/goal.schema.json" ] && ok "installs templates" || bad "installs templates"
+IOUT=$(CLAUDE_CONFIG_DIR="$INST_CFG" sh "$BIN/install.sh" 2>&1)
+check "re-install exits 0" $? 0
+echo "$IOUT" | grep -q "already installed" && ok "idempotent (same version short-circuits)" || bad "idempotent short-circuit"
+"$BIN/al-json" set "$INST_CFG/plugins/agent-loop/.claude-plugin/plugin.json" version '"0.0.0"' >/dev/null
+IOUT=$(CLAUDE_CONFIG_DIR="$INST_CFG" sh "$BIN/install.sh" 2>&1)
+check "stale-version re-install exits 0" $? 0
+echo "$IOUT" | grep -q "installed to" && ok "stale version re-copies" || bad "stale version re-copies"
+grep -q '"version": *"0.0.0"' "$INST_CFG/plugins/agent-loop/.claude-plugin/plugin.json" \
+  && bad "re-copy refreshes the manifest version" || ok "re-copy refreshes the manifest version"
+cp "$BIN/install.sh" "$SANDBOX/stray-install.sh"
+CLAUDE_CONFIG_DIR="$INST_CFG" sh "$SANDBOX/stray-install.sh" >/dev/null 2>&1
+check "stray copy refuses (no plugin.json beside it)" $? 1
 
 echo "# al-merge-settings"
 mkdir -p "$SANDBOX/.claude"

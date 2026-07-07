@@ -3,11 +3,19 @@
 # `lint` + `test`.
 .PHONY: test test-fast test-sync lint
 
-# Shell lint over the agent-loop bin/hook layer. Skips gracefully when
-# shellcheck isn't installed locally; CI installs it and fails on findings.
+# Shell lint over the agent-loop bin/hook layer (every shell script; al-watch
+# is python and excluded). Skips gracefully when shellcheck isn't installed
+# locally; CI installs it and fails on findings.
 lint:
 	@if command -v shellcheck >/dev/null 2>&1; then \
-	  shellcheck -S error plugins/agent-loop/bin/al-loop.sh plugins/agent-loop/bin/install.sh plugins/agent-loop/hooks/*.sh .claude/hooks/*.sh && echo "lint: clean"; \
+	  shellcheck -S error \
+	    plugins/agent-loop/bin/al-detect plugins/agent-loop/bin/al-detect-skills \
+	    plugins/agent-loop/bin/al-doctor plugins/agent-loop/bin/al-fleet \
+	    plugins/agent-loop/bin/al-goal plugins/agent-loop/bin/al-hash \
+	    plugins/agent-loop/bin/al-json plugins/agent-loop/bin/al-loop.sh \
+	    plugins/agent-loop/bin/al-merge-settings plugins/agent-loop/bin/al-state \
+	    plugins/agent-loop/bin/al-verify plugins/agent-loop/bin/install.sh \
+	    plugins/agent-loop/hooks/*.sh .claude/hooks/*.sh && echo "lint: clean"; \
 	else echo "lint: shellcheck not installed — skipped (CI runs it)"; fi
 
 # Parity guard: marketplace.json ↔ plugins/*/plugin.json ↔ README.md.

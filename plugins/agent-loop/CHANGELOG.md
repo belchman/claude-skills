@@ -54,6 +54,23 @@ mechanical instead of model-trusted.
   spaces/breaker, `/api/reject` success paths in both watch modes,
   `GET /api/state?repo=`, template↔schema validation, and
   `validate`/`merge` in the 3-engine parity loop.
+- **al-detect pylint fix**: `.pylintrc` alone never triggered pylint
+  detection (`ls a b` exits nonzero when any argument is missing) — caught
+  by the new branch tests; JS/TS (npm/pnpm/yarn, prettier), rust, and
+  django branches now pinned too, plus al-detect-skills' real filesystem
+  probe (env overrides bypassed it entirely).
+- **Atomic multi-field writes**: `plan-approve`, `plan-reject`, and
+  `pause-stall` stage on a work copy, schema-validate, then one `mv` —
+  matching `record-iter`; a crash mid-command can no longer leave
+  half-approved state.
+- **`al-fleet --prune`**: opt-in atomic registry GC (keep existing dirs,
+  drop dead paths) — the append-only registry finally has a cleanup path.
+- **install.sh tested**: copy set, executable bits, version idempotence,
+  stale-version re-copy, stray-copy refusal.
+- `make lint` shellchecks all 12 shell scripts in `bin/` + hooks (was 2);
+  everything passes at `-S error` and `-S warning`.
+- Nightly evals: `workflow_dispatch` gains a `trials` input for multi-trial
+  runs on demand (scheduled runs stay single-trial).
 
 ## 0.4.0 — 2026-07-06
 

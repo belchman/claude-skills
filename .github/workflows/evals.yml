@@ -6,6 +6,10 @@ on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
+    inputs:
+      trials:
+        description: "Trials per scenario (pass = all trials pass)"
+        default: "1"
 
 jobs:
   agent-loop-evals:
@@ -28,7 +32,7 @@ jobs:
         if: steps.key.outputs.present == 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: sh evals/agent-loop/run-eval.sh --fixtures sandbox
+        run: sh evals/agent-loop/run-eval.sh --fixtures sandbox --trials "${{ github.event.inputs.trials || '1' }}"
       # transcripts land in gitignored runs/ and die with the runner — upload
       # them so a red nightly is debuggable without a local rerun
       - name: Upload eval transcripts

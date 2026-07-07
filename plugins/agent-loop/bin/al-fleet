@@ -5,6 +5,8 @@
 #   AL_FLEET_REPOS=/path/one:/path/two al-fleet
 #   al-fleet          # falls back to the fleet registry
 #                     # ($AL_FLEET_REGISTRY or ~/.claude/agent-loop/fleet.list)
+#   al-fleet --prune  # rewrite the registry keeping only existing dirs (the
+#                     # only al-fleet mode that WRITES the registry)
 #
 # Columns: repo | goal id | status | iter/max | plan | flags | tokens | journal
 # Exit 1 when any repo NEEDS A HUMAN (plan awaiting approval, stall-paused,
@@ -13,6 +15,27 @@ set -u
 
 BIN_DIR=$(dirname "$0")
 ALJSON="$BIN_DIR/al-json"
+
+# --prune: the registry is append-only everywhere else, so deleted/moved
+# repos accumulate forever without this. Explicit, opt-in, atomic rewrite.
+if [ "${1:-}" = "--prune" ]; then
+  REG="${AL_FLEET_REGISTRY:-${HOME:-}/.claude/agent-loop/fleet.list}"
+  [ -f "$REG" ] || { echo "al-fleet: no registry at $REG — nothing to prune"; exit 0; }
+  TMPP="$REG.prune.$$"
+  KEPT=0; DROPPED=0
+  : > "$TMPP"
+  while IFS= read -r _line; do
+    [ -n "$_line" ] || continue
+    if [ -d "$_line" ]; then
+      printf '%s\n' "$_line" >> "$TMPP"; KEPT=$((KEPT + 1))
+    else
+      DROPPED=$((DROPPED + 1))
+    fi
+  done < "$REG"
+  mv "$TMPP" "$REG"
+  echo "al-fleet: pruned registry ($REG) — kept $KEPT, dropped $DROPPED"
+  exit 0
+fi
 
 # Repo enumeration is newline-delimited end to end (argv, colon-split env,
 # registry lines) so paths containing spaces survive — the registry is one

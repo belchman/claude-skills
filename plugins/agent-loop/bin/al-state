@@ -399,9 +399,15 @@ EOF
     PSTATUS=$("$ALJSON" get "$STATE_FILE" plan.status 2>/dev/null || echo none)
     [ "$PSTATUS" = "awaiting-human" ] || { echo "al-state: no plan awaiting approval (plan.status=$PSTATUS)" >&2; exit 1; }
     AT=$(now)
-    "$ALJSON" set "$STATE_FILE" plan.status '"approved"' >/dev/null
-    "$ALJSON" set "$STATE_FILE" plan.approved_at "\"$AT\"" >/dev/null
-    "$ALJSON" set "$STATE_FILE" plan.approved_by '"human"' >/dev/null
+    # staged like record-iter: a crash between field writes must never leave
+    # half-approved state on disk — one atomic mv or nothing
+    WORK="$STATE_FILE.work.$$"
+    cp "$STATE_FILE" "$WORK"
+    "$ALJSON" set "$WORK" plan.status '"approved"' >/dev/null
+    "$ALJSON" set "$WORK" plan.approved_at "\"$AT\"" >/dev/null
+    "$ALJSON" set "$WORK" plan.approved_by '"human"' >/dev/null
+    "$ALJSON" validate "$WORK" "$SCHEMA" || { rm -f "$WORK"; echo "al-state: plan-approve produced invalid state — nothing written" >&2; exit 1; }
+    mv "$WORK" "$STATE_FILE"
     audit_emit plan_approved "{\"by\":\"human\"}"
     echo "al-state: plan approved by human — the next run/tick will execute it"
     ;;
@@ -412,9 +418,13 @@ EOF
     PSTATUS=$("$ALJSON" get "$STATE_FILE" plan.status 2>/dev/null || echo none)
     [ "$PSTATUS" = "awaiting-human" ] || { echo "al-state: no plan awaiting approval (plan.status=$PSTATUS)" >&2; exit 1; }
     ESCR=$(printf '%s' "$REASON" | sed 's/\\/\\\\/g; s/"/\\"/g')
-    "$ALJSON" set "$STATE_FILE" plan.status '"none"' >/dev/null
-    "$ALJSON" set "$STATE_FILE" plan.tasks '[]' >/dev/null
-    "$ALJSON" set "$STATE_FILE" plan.rejected_reason "\"$ESCR\"" >/dev/null
+    WORK="$STATE_FILE.work.$$"
+    cp "$STATE_FILE" "$WORK"
+    "$ALJSON" set "$WORK" plan.status '"none"' >/dev/null
+    "$ALJSON" set "$WORK" plan.tasks '[]' >/dev/null
+    "$ALJSON" set "$WORK" plan.rejected_reason "\"$ESCR\"" >/dev/null
+    "$ALJSON" validate "$WORK" "$SCHEMA" || { rm -f "$WORK"; echo "al-state: plan-reject produced invalid state — nothing written" >&2; exit 1; }
+    mv "$WORK" "$STATE_FILE"
     audit_emit plan_rejected "{\"reason\":\"$ESCR\"}"
     echo "al-state: plan rejected — the next wake must re-plan around: $REASON"
     ;;
@@ -794,9 +804,13 @@ EOF
   pause-stall)
     require_state
     REPORT="${1:?al-state pause-stall: report required}"
-    "$ALJSON" set "$STATE_FILE" paused_by_stall true
     ESCAPED=$(printf '%s' "$REPORT" | sed 's/\\/\\\\/g; s/"/\\"/g')
-    "$ALJSON" set "$STATE_FILE" stall_report "\"$ESCAPED\""
+    WORK="$STATE_FILE.work.$$"
+    cp "$STATE_FILE" "$WORK"
+    "$ALJSON" set "$WORK" paused_by_stall true >/dev/null
+    "$ALJSON" set "$WORK" stall_report "\"$ESCAPED\"" >/dev/null
+    "$ALJSON" validate "$WORK" "$SCHEMA" || { rm -f "$WORK"; echo "al-state: pause-stall produced invalid state — nothing written" >&2; exit 1; }
+    mv "$WORK" "$STATE_FILE"
     audit_emit stall_pause "{\"report\":\"$ESCAPED\"}"
     ;;
 

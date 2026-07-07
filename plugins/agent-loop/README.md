@@ -496,7 +496,9 @@ fleets can enable OpenTelemetry (`CLAUDE_CODE_ENABLE_TELEMETRY=1`, metric
   or budget ceiling, breaker trip. A healthy iteration re-arms the dedupe.
 - **Fleet view** — `al-fleet repo1 repo2 …` (or `AL_FLEET_REPOS=a:b`)
   prints one status line per repo and exits nonzero when any loop needs a
-  human — wire it to cron/CI as a fleet health probe.
+  human — wire it to cron/CI as a fleet health probe. The registry is
+  append-only, so deleted/moved repos accumulate; `al-fleet --prune`
+  rewrites it keeping only paths that still exist (the one write path).
 - **Threat model** — `docs/agent-loop-design.md` §15 (prompt injection,
   self-certification, history rewriting, secrets, gate shutoff,
   concurrency, runaway spend).

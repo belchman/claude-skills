@@ -51,9 +51,16 @@ elif [ -f "$REPO/pyproject.toml" ] || [ -f "$REPO/setup.py" ] || [ -f "$REPO/req
   fi
   if [ -f "$REPO/pyproject.toml" ] && grep -q '\[tool\.ruff' "$REPO/pyproject.toml" 2>/dev/null; then
     put lint_cmd '"ruff check ."'; put format_cmd '"ruff format ."'; ev "pyproject [tool.ruff]"
-  elif ls "$REPO"/pylint*.rc "$REPO"/.pylintrc >/dev/null 2>&1; then
-    RC=$(ls "$REPO"/pylint*.rc "$REPO"/.pylintrc 2>/dev/null | head -1)
-    put lint_cmd "\"pylint --rcfile=$(basename "$RC")\""; ev "$(basename "$RC")"
+  else
+    # NOTE: not `ls a b` — ls exits nonzero when ANY argument is missing,
+    # which silently skipped this branch for repos with only .pylintrc
+    RC=""
+    for c in "$REPO"/pylint*.rc "$REPO"/.pylintrc; do
+      [ -f "$c" ] && RC="$c" && break
+    done
+    if [ -n "$RC" ]; then
+      put lint_cmd "\"pylint --rcfile=$(basename "$RC")\""; ev "$(basename "$RC")"
+    fi
   fi
 elif [ -f "$REPO/Cargo.toml" ]; then
   put language '"rust"'; ev "Cargo.toml"
